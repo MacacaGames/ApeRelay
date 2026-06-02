@@ -24,40 +24,152 @@ function buildSlackText(msg: UnifiedMessage): string {
       : 'Channel';
 
   const lines: string[] = [
-    '【外部訊息通知】',
+    '*【外部訊息通知】*',
     '',
-    `平台：${msg.platform}`,
-    `來源：${sourceLabel}`,
+    `*平台*：${msg.platform}`,
+    `*來源*：${sourceLabel}`,
   ];
 
   if (msg.platform === 'LINE') {
-    lines.push(`群組：${msg.sourceName}`);
+    lines.push(`*群組*：${msg.sourceName}`);
   } else {
     const [serverName, channelName] = msg.sourceName.split('::');
-    lines.push(`Server：${serverName ?? msg.sourceName}`);
-    if (channelName) lines.push(`Channel：#${channelName}`);
+    lines.push(`*Server*：${serverName ?? msg.sourceName}`);
+    if (channelName) lines.push(`*Channel*：#${channelName}`);
   }
 
   lines.push(
-    `發訊者：${msg.senderName}`,
-    `時間：${formatTimestamp(msg.timestamp)}`,
-    '',
-    '內容：',
-    msg.content,
-    '',
-    '狀態：未處理',
+    `*發訊者*：${msg.senderName}`,
+    `*時間*：${formatTimestamp(msg.timestamp)}`,
   );
+
+  if (msg.sourceUrl) {
+    lines.push(`*來源連結*：<${msg.sourceUrl}|開啟原始訊息>`);
+  }
+
+  lines.push('', '*內容*：', msg.content, '', '*狀態*：`未處理`');
 
   return lines.join('\n');
 }
 
+function buildSlackBlocks(msg: UnifiedMessage, mentionText: string) {
+  const sourceLabel =
+    msg.platform === 'LINE'
+      ? msg.sourceType === 'group'
+        ? '群組'
+        : '一對一'
+      : 'Channel';
+
+  const sourceLines = [
+    `*平台*：${msg.platform}`,
+    `*來源*：${sourceLabel}`,
+  ];
+
+  if (msg.platform === 'LINE') {
+    sourceLines.push(`*群組*：${msg.sourceName}`);
+  } else {
+    const [serverName, channelName] = msg.sourceName.split('::');
+    sourceLines.push(`*Server*：${serverName ?? msg.sourceName}`);
+    if (channelName) {
+      sourceLines.push(`*Channel*：#${channelName}`);
+    }
+  }
+
+  sourceLines.push(`*發訊者*：${msg.senderName}`);
+  sourceLines.push(`*時間*：${formatTimestamp(msg.timestamp)}`);
+
+  if (msg.sourceUrl) {
+    sourceLines.push(`*來源連結*：<${msg.sourceUrl}|開啟原始訊息>`);
+  }
+
+  const blocks: Array<Record<string, unknown>> = [];
+
+  if (mentionText) {
+    blocks.push({
+      type: 'section',
+      text: {
+        type: 'mrkdwn',
+        text: mentionText,
+      },
+    });
+  }
+
+  blocks.push(
+    {
+      type: 'header',
+      text: {
+        type: 'plain_text',
+        text: '【外部訊息通知】',
+        emoji: false,
+      },
+    },
+    {
+      type: 'section',
+      text: {
+        type: 'mrkdwn',
+        text: sourceLines.join('\n'),
+      },
+    },
+    {
+      type: 'section',
+      text: {
+        type: 'mrkdwn',
+        text: '*內容*：\n' + msg.content,
+      },
+    },
+    {
+      type: 'context',
+      elements: [
+        {
+          type: 'mrkdwn',
+          text: '*狀態*：`未處理`',
+        },
+      ],
+    },
+  );
+
+  return blocks;
+}
+
 const SLACK_API_URL = 'https://slack.com/api/chat.postMessage';
+
+function normalizeMentionTarget(value: string): string {
+  const raw = value.trim();
+  if (!raw) return '';
+
+  const lower = raw.toLowerCase();
+  if (lower === '@everyone' || lower === '<!everyone>') return '<!everyone>';
+  if (lower === '@here' || lower === '<!here>') return '<!here>';
+  if (lower === '@channel' || lower === '<!channel>') return '<!channel>';
+
+  const userMatch = raw.match(/^<@([A-Z0-9]+)>$/i);
+  if (userMatch) {
+    return `<@${userMatch[1].toUpperCase()}>`;
+  }
+
+  const userGroupWithLabelMatch = raw.match(/^<!subteam\^([A-Z0-9]+)(\|[^>]+)?>$/i);
+  if (userGroupWithLabelMatch) {
+    return `<!subteam^${userGroupWithLabelMatch[1].toUpperCase()}>`;
+  }
+
+  if (/^[SUW][A-Z0-9]{8,}$/i.test(raw)) {
+    return `<@${raw.toUpperCase()}>`;
+  }
+
+  return raw;
+}
 
 export async function sendToSlack(
   msg: UnifiedMessage,
   channel?: string,
+  mentionTargets?: string[],
 ): Promise<void> {
-  const text = buildSlackText(msg);
+  const normalizedMentionTargets = (mentionTargets ?? [])
+    .map((value) => normalizeMentionTarget(value))
+    .filter(Boolean);
+  const mentionText = Array.from(new Set(normalizedMentionTargets)).join(' ');
+  const messageText = buildSlackText(msg);
+  const fallbackText = mentionText ? `${mentionText}\n\n${messageText}` : messageText;
   const targetChannel = channel ?? config.slack.defaultChannel;
 
   const response = await fetch(SLACK_API_URL, {
@@ -66,7 +178,15 @@ export async function sendToSlack(
       'Content-Type': 'application/json',
       Authorization: `Bearer ${config.slack.botToken}`,
     },
-    body: JSON.stringify({ channel: targetChannel, text }),
+    body: JSON.stringify({
+      channel: targetChannel,
+      text: fallbackText,
+      blocks: buildSlackBlocks(msg, mentionText),
+      mrkdwn: true,
+      link_names: true,
+      unfurl_links: false,
+      unfurl_media: false,
+    }),
   });
 
   if (!response.ok) {
@@ -83,7 +203,14 @@ export async function sendToSlack(
   }
 
   logger.info(
-    { platform: msg.platform, source: msg.sourceName, sender: msg.senderName, channel: targetChannel },
+    {
+      platform: msg.platform,
+      source: msg.sourceName,
+      sender: msg.senderName,
+      channel: targetChannel,
+      mentionTargets: mentionTargets ?? [],
+      normalizedMentions: normalizedMentionTargets,
+    },
     'Forwarded message to Slack',
   );
 }

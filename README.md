@@ -1,6 +1,6 @@
-# ApeRelay
+# 搬磚猿（ApeRelay）
 
-自架訊息轉發服務：LINE / Discord → Slack。
+搬磚猿是一個自架訊息轉發服務：LINE / Discord → Slack。
 
 ```
 LINE 群組 / 官方帳號  ──→
@@ -64,7 +64,7 @@ PORT=3000
 PUBLIC_BASE_URL=https://relay.example.com   # 你的對外網址（LINE webhook 需要 HTTPS）
 
 SLACK_BOT_TOKEN=xoxb-your-bot-token
-SLACK_DEFAULT_CHANNEL=#external-message-alert    # 預設發送頻道
+SLACK_DEFAULT_CHANNEL="#external-message-alert"    # 若值以 # 開頭，請加雙引號
 
 LINE_CHANNEL_SECRET=你的_channel_secret
 LINE_CHANNEL_ACCESS_TOKEN=你的_access_token
@@ -77,9 +77,13 @@ TIMEZONE=Asia/Taipei
 LOG_LEVEL=info
 ```
 
+> LINE 目前可先留空；留空時 LINE webhook 會自動停用，不影響服務運行與 Discord 轉發。
+
 > ⚠️ `.env` 已列入 `.gitignore`，絕對不要 commit 進 Git。
 >
 > 補充：直接執行 [test.sh](test.sh) 時，如果 `.env` 不存在，腳本也會自動從 `.env.example` 建立一份。
+>
+> 注意：`.env` 中如果值以 `#` 開頭，必須加上雙引號，不然會被當成註解。例如 `SLACK_DEFAULT_CHANNEL="#external-message-alert"`。
 
 ---
 
@@ -150,6 +154,32 @@ BASE_URL=https://relay.example.com ./test.sh
 | `GET` | `/health` | 存活確認，回傳 `{ status, uptime }` |
 | `POST` | `/webhook/line` | LINE Messaging API Webhook 接收端 |
 | `POST` | `/webhook/test-slack` | 手動觸發 Slack 測試通知 |
+| `GET` | `/admin` | Web Admin 管理介面 |
+| `GET` | `/api/admin/discord-rules` | 取得 Discord → Slack 規則清單 |
+| `POST` | `/api/admin/discord-rules` | 新增規則 |
+| `PUT` | `/api/admin/discord-rules/:id` | 更新規則（例如啟用/停用） |
+| `DELETE` | `/api/admin/discord-rules/:id` | 刪除規則 |
+
+---
+
+## Web Admin（多組平行設定）
+
+打開 [http://localhost:3000/admin](http://localhost:3000/admin) 可以管理多組 Discord → Slack 規則。
+
+每組規則都可設定：
+
+- Discord 來源：Guild / Channel（支援下拉選單或手動輸入 ID）
+- Slack 目標頻道：`#channel` 或 `C123...`
+- 預設標記：可多選（例如 `<!here>` + `<@U123456>`）
+- 啟用/停用
+
+規則是平行生效的，系統會依來源比對命中的規則進行轉發。
+
+轉發訊息會附上來源 URL（Discord message link），並把標記對象放在訊息尾端。
+
+圖片/附件訊息也會被處理：若無文字內容會顯示圖片/附件提示，並附上檔案連結。
+
+資料會持久化在本機：`data/relay-rules.json`。
 
 ---
 
@@ -190,10 +220,21 @@ src/
 
 ## 開發里程碑
 
+### 目前進度（2026-06-02）
+
+- 已完成 M1：Slack 核心轉發（Bot Token + `chat.postMessage`）、`/health`、`/webhook/test-slack`。
+- 已完成本地啟動與驗證流程：`test.sh` 可自動補 `.env`、自動啟動服務、驗證健康檢查與 Slack 測試通知。
+- 已完成 VS Code 開發工作流：build task、typecheck task、debug 啟動設定。
+- M2 先擱置：LINE 功能改為可選啟用（缺少 LINE env 不會影響服務啟動）。
+- M3 已開始：Discord Bot 監聽、白名單過濾、訊息 normalize 並轉送 Slack。
+- M4 已開始：新增 Web Admin，可管理多組 Discord → Slack 規則，並支援每組預設標記對象。
+- 下一步目標：補上 Web Admin 認證與更完整的編輯體驗（目前先提供最小可用版）。
+
 | Milestone | 狀態 | 內容 |
 |-----------|------|------|
 | M1 Slack Core | ✅ 完成 | 基礎服務、/health、測試端點、Docker |
-| M2 LINE → Slack | 🔧 進行中 | LINE webhook、signature 驗證、訊息轉發 |
-| M3 Discord → Slack | ⬜ 待做 | Discord Bot、頻道監聽、白名單過濾 |
-| M4 Production | ⬜ 待做 | Caddy HTTPS、log volume、部署文件 |
-| M5 SOP | ⬜ 待做 | 團隊使用說明、異常排查 |
+| M2 LINE → Slack | ⏸️ 擱置 | LINE webhook、signature 驗證、訊息轉發（可選啟用） |
+| M3 Discord → Slack | 🔧 進行中 | Discord Bot、頻道監聽、白名單過濾 |
+| M4 Web Admin  | 🔧 進行中 | 在 WebAdmin 設定多組 Discord / LINE 來源並分流到不同 Slack 頻道，含持久化設定 |
+| M5 Production | ⬜ 待做 | Docker 容器化、log volume、部署文件 |
+| M6 SOP | ⬜ 待做 | 團隊使用說明、異常排查 |

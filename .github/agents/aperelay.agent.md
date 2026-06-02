@@ -20,7 +20,6 @@ No n8n, no Zapier, no Make. One Docker service, running in the background, zero 
 - `@line/bot-sdk` (LINE webhook + signature verification)
 - Slack Incoming Webhook (HTTP POST)
 - Docker + Docker Compose
-- Caddy (HTTPS reverse proxy in production)
 - Winston or pino (structured logging)
 - `.env` for all secrets (never committed)
 
@@ -134,11 +133,15 @@ LOG_LEVEL=info
 
 Work in this order:
 
-1. **M1 – Slack Core**: `config.ts`, `logger.ts`, `slackNotifier.ts`, `/health`, `/webhook/test-slack`, Dockerfile, docker-compose.yml, `.env.example`
-2. **M2 – LINE → Slack**: `/webhook/line`, LINE signature validation, `lineNormalizer.ts`, text message parsing, group/DM source detection
-3. **M3 – Discord → Slack**: `discordClient.ts`, `messageCreate` handler, guild/channel allow-list filter, `discordNormalizer.ts`
-4. **M4 – Production**: Caddy HTTPS, log volume, restart policy, `.env` production values, health check in Compose
-5. **M5 – SOP**: README with team onboarding, LINE bot group invite instructions, Discord bot invite link, troubleshooting guide
+| Milestone  | 內容 |
+|---------------|------|
+| M1 Slack Core  | 基礎服務、/health、測試端點、Docker |
+| M2 LINE → Slack  | LINE webhook、signature 驗證、訊息轉發 |
+| M3 Discord → Slack  | Discord Bot、頻道監聽、白名單過濾 |
+| M4 Web Admin | 在 WebAdmin 設定 多個 Discord 跟 Line 來源 並發佈到不同的頻道，且要可以輸入輸出 coing 或加入其他持久化，以簡單為主，例如 sqlite 等 |
+| M5 Production  | Docker 容器化、log volume、部署文件 |
+| M6 SOP | 團隊使用說明、異常排查 |
+
 
 ## Constraints
 

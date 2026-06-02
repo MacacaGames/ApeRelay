@@ -6,6 +6,14 @@ function requireEnv(key: string): string {
   return value;
 }
 
+function optionalEnv(key: string): string | undefined {
+  const value = process.env[key]?.trim();
+  if (!value) {
+    return undefined;
+  }
+  return value;
+}
+
 function splitIds(value: string): string[] {
   return value
     .split(',')
@@ -23,8 +31,11 @@ export const config = {
   },
 
   line: {
-    channelSecret: requireEnv('LINE_CHANNEL_SECRET'),
-    channelAccessToken: requireEnv('LINE_CHANNEL_ACCESS_TOKEN'),
+    channelSecret: optionalEnv('LINE_CHANNEL_SECRET'),
+    channelAccessToken: optionalEnv('LINE_CHANNEL_ACCESS_TOKEN'),
+    enabled: Boolean(
+      optionalEnv('LINE_CHANNEL_SECRET') && optionalEnv('LINE_CHANNEL_ACCESS_TOKEN'),
+    ),
   },
 
   discord: {
