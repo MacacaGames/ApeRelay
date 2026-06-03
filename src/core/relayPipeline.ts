@@ -1,8 +1,9 @@
 import { getDiscordRelayRuntimeConfig } from '../admin/relayRuleStore.js';
+import { getLineRelayRuntimeConfig } from '../admin/relayRuleStore.js';
 import { config } from '../config.js';
 import { logger } from '../logger.js';
 import { sendToSlack } from '../slack/slackNotifier.js';
-import type { DiscordRelayRule, UnifiedMessage } from '../types.js';
+import type { DiscordRelayRule, LineRelayRule, UnifiedMessage } from '../types.js';
 
 type DiscordRelayContext = {
   guildId?: string;
@@ -15,6 +16,10 @@ type RelayInput = {
   source: 'discord' | 'line' | 'generic-webhook' | 'test';
   message: UnifiedMessage;
   discord?: DiscordRelayContext;
+  line?: {
+    groupId?: string;
+    speakerId?: string;
+  };
 };
 
 type RelayResult = {
@@ -72,6 +77,35 @@ function shouldExcludeAuthor(
   return excluded.has(authorId);
 }
 
+function findMatchingLineRule(rules: LineRelayRule[], groupId: string): LineRelayRule | null {
+  for (const rule of rules) {
+    if (!rule.enabled) {
+      continue;
+    }
+
+    if (rule.sourceGroupId !== groupId) {
+      continue;
+    }
+
+    return rule;
+  }
+
+  return null;
+}
+
+function shouldFilterLineSpeaker(rule: LineRelayRule, speakerId: string | undefined): boolean {
+  if (!speakerId) {
+    return false;
+  }
+
+  const allowed = (rule.allowedSpeakerIds ?? []).filter(Boolean);
+  if (allowed.length === 0) {
+    return false;
+  }
+
+  return !allowed.includes(speakerId);
+}
+
 function isDiscordAllowlisted(guildId: string | undefined, channelCandidateIds: string[]): AllowCheck {
   const guildAllowed =
     !guildId ||
@@ -90,6 +124,42 @@ function isDiscordAllowlisted(guildId: string | undefined, channelCandidateIds: 
 }
 
 export async function relayIncomingMessage(input: RelayInput): Promise<RelayResult> {
+  if (input.source === 'line') {
+    const lineCtx = input.line;
+    if (!lineCtx?.groupId) {
+      logger.info('Skip LINE message because source groupId is missing');
+      return { forwarded: false, reason: 'line-missing-group-id' };
+    }
+
+    const runtimeConfig = await getLineRelayRuntimeConfig();
+    const matchedRule = findMatchingLineRule(runtimeConfig.rules, lineCtx.groupId);
+
+    if (!matchedRule) {
+      logger.info(
+        {
+          sourceGroupId: lineCtx.groupId,
+        },
+        'Skip LINE message because no matching enabled LINE rule',
+      );
+      return { forwarded: false, reason: 'line-no-matching-rule' };
+    }
+
+    if (shouldFilterLineSpeaker(matchedRule, lineCtx.speakerId)) {
+      logger.info(
+        {
+          sourceGroupId: lineCtx.groupId,
+          speakerId: lineCtx.speakerId,
+          ruleId: matchedRule.id,
+        },
+        'Skip LINE message due to speaker filter',
+      );
+      return { forwarded: false, reason: 'line-speaker-filtered' };
+    }
+
+    await sendToSlack(input.message, matchedRule.targetSlackChannel, matchedRule.mentionTargets);
+    return { forwarded: true };
+  }
+
   if (input.source !== 'discord') {
     await sendToSlack(input.message);
     return { forwarded: true };
@@ -121,10 +191,35 @@ export async function relayIncomingMessage(input: RelayInput): Promise<RelayResu
 
     await sendToSlack(input.message, matchedRule.targetSlackChannel, matchedRule.mentionTargets);
     logger.info(
-      { messageId: discordCtx.messageId, ruleId: matchedRule.id, ruleName: matchedRule.name },
+      {
+        messageId: discordCtx.messageId,
+        ruleId: matchedRule.id,
+        ruleName: matchedRule.name,
+        mentionTargets: matchedRule.mentionTargets ?? [],
+      },
       'Forwarded Discord message via admin rule',
     );
     return { forwarded: true };
+  }
+
+  if (runtimeConfig.rules.some((rule) => rule.enabled)) {
+    logger.info(
+      {
+        messageId: discordCtx.messageId,
+        guildId: discordCtx.guildId,
+        channelCandidateIds: discordCtx.channelCandidateIds,
+        configuredRules: runtimeConfig.rules
+          .filter((rule) => rule.enabled)
+          .map((rule) => ({
+            id: rule.id,
+            name: rule.name,
+            sourceGuildId: rule.sourceGuildId,
+            sourceChannelId: rule.sourceChannelId,
+          })),
+      },
+      'Skip Discord message because no admin rule matched',
+    );
+    return { forwarded: false, reason: 'discord-no-matching-rule' };
   }
 
   if (shouldExcludeAuthor(discordCtx.authorId, runtimeConfig.globalExcludedAuthorIds)) {

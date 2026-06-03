@@ -26,34 +26,49 @@ function buildSlackText(msg: UnifiedMessage): string {
         : 'Webhook';
 
   const lines: string[] = [
-    '*【外部訊息通知】*',
+    '【外部訊息通知】',
     '',
-    `*平台*：${msg.platform}`,
-    `*來源*：${sourceLabel}`,
+    `平台：${msg.platform}`,
+    `來源：${sourceLabel}`,
   ];
 
   if (msg.platform === 'LINE') {
-    lines.push(`*群組*：${msg.sourceName}`);
+    lines.push(`群組：${msg.sourceName}`);
   } else if (msg.platform === 'Discord') {
     const [serverName, channelName] = msg.sourceName.split('::');
-    lines.push(`*Server*：${serverName ?? msg.sourceName}`);
-    if (channelName) lines.push(`*Channel*：#${channelName}`);
+    lines.push(`Server：${serverName ?? msg.sourceName}`);
+    if (channelName) lines.push(`Channel：#${channelName}`);
   } else {
-    lines.push(`*來源名稱*：${msg.sourceName}`);
+    lines.push(`來源名稱：${msg.sourceName}`);
   }
 
   lines.push(
-    `*發訊者*：${msg.senderName}`,
-    `*時間*：${formatTimestamp(msg.timestamp)}`,
+    `發訊者：${msg.senderName}`,
+    `時間：${formatTimestamp(msg.timestamp)}`,
   );
 
   if (msg.sourceUrl) {
-    lines.push(`*來源連結*：<${msg.sourceUrl}|開啟原始訊息>`);
+    lines.push(`來源連結：${msg.sourceUrl}`);
   }
 
-  lines.push('', '*內容*：', msg.content, '', '*狀態*：`未處理`');
+  lines.push('', '內容：', msg.content, '', '狀態：未處理');
 
   return lines.join('\n');
+}
+
+function truncateSlackText(value: string, maxLength: number): string {
+  if (value.length <= maxLength) {
+    return value;
+  }
+
+  return `${value.slice(0, Math.max(0, maxLength - 1))}…`;
+}
+
+function mrkdwnField(label: string, value: string): Record<string, string> {
+  return {
+    type: 'mrkdwn',
+    text: `*${label}*\n${truncateSlackText(value || '-', 900)}`,
+  };
 }
 
 function buildSlackBlocks(msg: UnifiedMessage, mentionText: string) {
@@ -66,29 +81,25 @@ function buildSlackBlocks(msg: UnifiedMessage, mentionText: string) {
         ? 'Channel'
         : 'Webhook';
 
-  const sourceLines = [
-    `*平台*：${msg.platform}`,
-    `*來源*：${sourceLabel}`,
+  const fields = [
+    mrkdwnField('平台', msg.platform),
+    mrkdwnField('來源', sourceLabel),
   ];
 
   if (msg.platform === 'LINE') {
-    sourceLines.push(`*群組*：${msg.sourceName}`);
+    fields.push(mrkdwnField('群組', msg.sourceName));
   } else if (msg.platform === 'Discord') {
     const [serverName, channelName] = msg.sourceName.split('::');
-    sourceLines.push(`*Server*：${serverName ?? msg.sourceName}`);
+    fields.push(mrkdwnField('Server', serverName ?? msg.sourceName));
     if (channelName) {
-      sourceLines.push(`*Channel*：#${channelName}`);
+      fields.push(mrkdwnField('Channel', `#${channelName}`));
     }
   } else {
-    sourceLines.push(`*來源名稱*：${msg.sourceName}`);
+    fields.push(mrkdwnField('來源名稱', msg.sourceName));
   }
 
-  sourceLines.push(`*發訊者*：${msg.senderName}`);
-  sourceLines.push(`*時間*：${formatTimestamp(msg.timestamp)}`);
-
-  if (msg.sourceUrl) {
-    sourceLines.push(`*來源連結*：<${msg.sourceUrl}|開啟原始訊息>`);
-  }
+  fields.push(mrkdwnField('發訊者', msg.senderName));
+  fields.push(mrkdwnField('時間', formatTimestamp(msg.timestamp)));
 
   const blocks: Array<Record<string, unknown>> = [];
 
@@ -97,7 +108,7 @@ function buildSlackBlocks(msg: UnifiedMessage, mentionText: string) {
       type: 'section',
       text: {
         type: 'mrkdwn',
-        text: mentionText,
+        text: `${mentionText}\n*需要處理的新外部訊息*`,
       },
     });
   }
@@ -113,18 +124,38 @@ function buildSlackBlocks(msg: UnifiedMessage, mentionText: string) {
     },
     {
       type: 'section',
-      text: {
-        type: 'mrkdwn',
-        text: sourceLines.join('\n'),
-      },
+      fields,
+    },
+    {
+      type: 'divider',
     },
     {
       type: 'section',
       text: {
         type: 'mrkdwn',
-        text: '*內容*：\n' + msg.content,
+        text: `*內容*\n${truncateSlackText(msg.content, 2800)}`,
       },
     },
+  );
+
+  if (msg.sourceUrl) {
+    blocks.push({
+      type: 'actions',
+      elements: [
+        {
+          type: 'button',
+          text: {
+            type: 'plain_text',
+            text: '開啟原始訊息',
+            emoji: false,
+          },
+          url: msg.sourceUrl,
+        },
+      ],
+    });
+  }
+
+  blocks.push(
     {
       type: 'context',
       elements: [

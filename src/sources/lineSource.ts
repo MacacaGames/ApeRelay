@@ -8,6 +8,12 @@ import type { SourceAdapter } from './types.js';
 
 type RawBodyRequest = Request & { rawBody?: Buffer };
 type LineSource = WebhookEvent['source'];
+type LineGroupOption = {
+  id: string;
+  name: string;
+  lastMessageAt: string;
+  speakers: Array<{ id: string; displayName: string; lastSeenAt: string }>;
+};
 
 type LineWebhookDebugState = {
   lastRequestAt: string | null;
@@ -17,6 +23,9 @@ type LineWebhookDebugState = {
   lastEventTypes: string[];
   lastHttpStatus: number | null;
   lastNote: string | null;
+  lastRelayAttemptAt: string | null;
+  lastRelaySucceeded: boolean | null;
+  lastRelayError: string | null;
 };
 
 const lineWebhookDebugState: LineWebhookDebugState = {
@@ -27,7 +36,12 @@ const lineWebhookDebugState: LineWebhookDebugState = {
   lastEventTypes: [],
   lastHttpStatus: null,
   lastNote: null,
+  lastRelayAttemptAt: null,
+  lastRelaySucceeded: null,
+  lastRelayError: null,
 };
+
+const lineRecentGroups = new Map<string, LineGroupOption>();
 
 const lineClient = config.line.enabled
   ? new Client({
@@ -84,6 +98,68 @@ async function getSenderName(event: WebhookEvent): Promise<string | undefined> {
   return undefined;
 }
 
+async function getGroupName(source: LineSource): Promise<string | undefined> {
+  if (!lineClient || source.type !== 'group') {
+    return undefined;
+  }
+
+  try {
+    const summary = await lineClient.getGroupSummary(source.groupId);
+    if (summary.groupName?.trim()) {
+      return summary.groupName.trim();
+    }
+  } catch (err) {
+    logger.warn({ err, groupId: source.groupId }, 'Failed to fetch LINE group summary');
+  }
+
+  return undefined;
+}
+
+async function rememberLineGroup(event: WebhookEvent, senderName?: string): Promise<void> {
+  if (event.type !== 'message' || event.source.type !== 'group') {
+    return;
+  }
+
+  const groupId = event.source.groupId;
+  const now = new Date().toISOString();
+  const groupName = (await getGroupName(event.source)) ?? `LINE 群組 (${groupId})`;
+  const speakerId = event.source.userId ?? 'unknown';
+  const speakerName = senderName?.trim() || speakerId;
+
+  const existing = lineRecentGroups.get(groupId) ?? {
+    id: groupId,
+    name: groupName,
+    lastMessageAt: now,
+    speakers: [],
+  };
+
+  existing.name = groupName;
+  existing.lastMessageAt = now;
+
+  const speakerIdx = existing.speakers.findIndex((speaker) => speaker.id === speakerId);
+  if (speakerIdx === -1) {
+    existing.speakers.push({ id: speakerId, displayName: speakerName, lastSeenAt: now });
+  } else {
+    existing.speakers[speakerIdx] = {
+      id: speakerId,
+      displayName: speakerName,
+      lastSeenAt: now,
+    };
+  }
+
+  existing.speakers.sort((a, b) => b.lastSeenAt.localeCompare(a.lastSeenAt));
+  lineRecentGroups.set(groupId, existing);
+
+  if (lineRecentGroups.size > 30) {
+    const oldest = Array.from(lineRecentGroups.values())
+      .sort((a, b) => a.lastMessageAt.localeCompare(b.lastMessageAt))
+      .slice(0, lineRecentGroups.size - 30);
+    for (const item of oldest) {
+      lineRecentGroups.delete(item.id);
+    }
+  }
+}
+
 export async function handleLineWebhook(req: Request, res: Response): Promise<void> {
   lineWebhookDebugState.lastRequestAt = new Date().toISOString();
 
@@ -94,6 +170,8 @@ export async function handleLineWebhook(req: Request, res: Response): Promise<vo
     lineWebhookDebugState.lastEventTypes = [];
     lineWebhookDebugState.lastHttpStatus = 503;
     lineWebhookDebugState.lastNote = 'LINE source disabled (env missing or placeholder).';
+    lineWebhookDebugState.lastRelaySucceeded = null;
+    lineWebhookDebugState.lastRelayError = null;
     logger.warn('LINE webhook request received but LINE source is disabled or using placeholder env values');
     res.status(503).json({
       ok: false,
@@ -112,6 +190,8 @@ export async function handleLineWebhook(req: Request, res: Response): Promise<vo
     lineWebhookDebugState.lastEventTypes = [];
     lineWebhookDebugState.lastHttpStatus = 400;
     lineWebhookDebugState.lastNote = 'Missing signature header or raw body.';
+    lineWebhookDebugState.lastRelaySucceeded = null;
+    lineWebhookDebugState.lastRelayError = null;
     logger.warn('LINE webhook missing signature or raw body');
     res.status(400).json({ ok: false, message: 'Invalid LINE webhook request.' });
     return;
@@ -129,6 +209,8 @@ export async function handleLineWebhook(req: Request, res: Response): Promise<vo
     lineWebhookDebugState.lastEventTypes = [];
     lineWebhookDebugState.lastHttpStatus = 403;
     lineWebhookDebugState.lastNote = 'Invalid LINE signature.';
+    lineWebhookDebugState.lastRelaySucceeded = null;
+    lineWebhookDebugState.lastRelayError = null;
     logger.warn('LINE signature validation failed');
     res.status(403).json({ ok: false, message: 'Invalid LINE signature.' });
     return;
@@ -155,6 +237,7 @@ export async function handleLineWebhook(req: Request, res: Response): Promise<vo
 
   for (const event of events) {
     const senderName = await getSenderName(event);
+    await rememberLineGroup(event, senderName);
     const normalized = normalizeLineEvent(event, senderName);
 
     if (!normalized) {
@@ -172,11 +255,20 @@ export async function handleLineWebhook(req: Request, res: Response): Promise<vo
     }
 
     try {
+      lineWebhookDebugState.lastRelayAttemptAt = new Date().toISOString();
       await relayIncomingMessage({
         source: 'line',
         message: normalized,
+        line: {
+          groupId: event.source.type === 'group' ? event.source.groupId : undefined,
+          speakerId: event.source.userId,
+        },
       });
+      lineWebhookDebugState.lastRelaySucceeded = true;
+      lineWebhookDebugState.lastRelayError = null;
     } catch (err) {
+      lineWebhookDebugState.lastRelaySucceeded = false;
+      lineWebhookDebugState.lastRelayError = err instanceof Error ? err.message : String(err);
       logger.error({ err, eventType: event.type }, 'Failed to forward LINE message to Slack');
     }
   }
@@ -201,4 +293,13 @@ export const lineSourceAdapter: SourceAdapter = {
 
 export function getLineWebhookDebugState(): LineWebhookDebugState {
   return { ...lineWebhookDebugState };
+}
+
+export function getLineRecentGroupOptions(): LineGroupOption[] {
+  return Array.from(lineRecentGroups.values())
+    .sort((a, b) => b.lastMessageAt.localeCompare(a.lastMessageAt))
+    .map((group) => ({
+      ...group,
+      speakers: [...group.speakers],
+    }));
 }

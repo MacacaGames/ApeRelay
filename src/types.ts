@@ -22,6 +22,16 @@ export interface DiscordRelayRule {
   excludedAuthorIds?: string[];
 }
 
+export interface LineRelayRule {
+  id: string;
+  name: string;
+  enabled: boolean;
+  sourceGroupId: string;
+  targetSlackChannel: string;
+  mentionTargets?: string[];
+  allowedSpeakerIds?: string[];
+}
+
 export interface DiscordSourceChannelOption {
   id: string;
   name: string;
