@@ -14,6 +14,23 @@ function optionalEnv(key: string): string | undefined {
   return value;
 }
 
+function isConfiguredSecret(value: string | undefined): value is string {
+  if (!value) {
+    return false;
+  }
+
+  const normalized = value.trim().toLowerCase();
+  if (!normalized) {
+    return false;
+  }
+
+  if (normalized.startsWith('your_')) {
+    return false;
+  }
+
+  return true;
+}
+
 function splitIds(value: string): string[] {
   return value
     .split(',')
@@ -33,9 +50,8 @@ export const config = {
   line: {
     channelSecret: optionalEnv('LINE_CHANNEL_SECRET'),
     channelAccessToken: optionalEnv('LINE_CHANNEL_ACCESS_TOKEN'),
-    enabled: Boolean(
-      optionalEnv('LINE_CHANNEL_SECRET') && optionalEnv('LINE_CHANNEL_ACCESS_TOKEN'),
-    ),
+    enabled: isConfiguredSecret(optionalEnv('LINE_CHANNEL_SECRET')) &&
+      isConfiguredSecret(optionalEnv('LINE_CHANNEL_ACCESS_TOKEN')),
   },
 
   discord: {

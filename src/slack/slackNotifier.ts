@@ -21,7 +21,9 @@ function buildSlackText(msg: UnifiedMessage): string {
       ? msg.sourceType === 'group'
         ? '群組'
         : '一對一'
-      : 'Channel';
+      : msg.platform === 'Discord'
+        ? 'Channel'
+        : 'Webhook';
 
   const lines: string[] = [
     '*【外部訊息通知】*',
@@ -32,10 +34,12 @@ function buildSlackText(msg: UnifiedMessage): string {
 
   if (msg.platform === 'LINE') {
     lines.push(`*群組*：${msg.sourceName}`);
-  } else {
+  } else if (msg.platform === 'Discord') {
     const [serverName, channelName] = msg.sourceName.split('::');
     lines.push(`*Server*：${serverName ?? msg.sourceName}`);
     if (channelName) lines.push(`*Channel*：#${channelName}`);
+  } else {
+    lines.push(`*來源名稱*：${msg.sourceName}`);
   }
 
   lines.push(
@@ -58,7 +62,9 @@ function buildSlackBlocks(msg: UnifiedMessage, mentionText: string) {
       ? msg.sourceType === 'group'
         ? '群組'
         : '一對一'
-      : 'Channel';
+      : msg.platform === 'Discord'
+        ? 'Channel'
+        : 'Webhook';
 
   const sourceLines = [
     `*平台*：${msg.platform}`,
@@ -67,12 +73,14 @@ function buildSlackBlocks(msg: UnifiedMessage, mentionText: string) {
 
   if (msg.platform === 'LINE') {
     sourceLines.push(`*群組*：${msg.sourceName}`);
-  } else {
+  } else if (msg.platform === 'Discord') {
     const [serverName, channelName] = msg.sourceName.split('::');
     sourceLines.push(`*Server*：${serverName ?? msg.sourceName}`);
     if (channelName) {
       sourceLines.push(`*Channel*：#${channelName}`);
     }
+  } else {
+    sourceLines.push(`*來源名稱*：${msg.sourceName}`);
   }
 
   sourceLines.push(`*發訊者*：${msg.senderName}`);

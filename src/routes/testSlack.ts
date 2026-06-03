@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { sendToSlack } from '../slack/slackNotifier.js';
+import { relayIncomingMessage } from '../core/relayPipeline.js';
 import { logger } from '../logger.js';
 import type { UnifiedMessage } from '../types.js';
 
@@ -17,7 +17,10 @@ router.post('/', async (_req, res) => {
   };
 
   try {
-    await sendToSlack(testMsg);
+    await relayIncomingMessage({
+      source: 'test',
+      message: testMsg,
+    });
     res.json({ ok: true, message: 'Test notification sent to Slack.' });
   } catch (err) {
     logger.error({ err }, 'test-slack endpoint error');

@@ -33,12 +33,16 @@ Discord 指定頻道      ──→
 
 ### LINE Messaging API
 
-1. 前往 [LINE Developers Console](https://developers.line.biz/)
-2. 建立 Provider → 建立 **Messaging API channel**
-3. Basic settings → 複製 **Channel secret**
-4. Messaging API → 複製 **Channel access token**（長期有效）
-5. Webhook URL 設為：`https://your-domain.com/webhook/line`
+1. 前往 [LINE Developers Console](https://developers.line.biz/)（目前已無法直接在此建立 Messaging API channel）
+2. 先建立 LINE Official Account：
+  - [Create a LINE Official Account](https://entry.line.biz/form/entry/unverified)
+3. 開啟 LINE Official Account Manager，為該帳號啟用 Messaging API
+4. 取得 **Channel secret** 與 **Channel access token**（長期有效）
+5. Webhook URL 設為：`https://your-domain.com/  `
 6. 開啟 **Use webhook**；關閉 **Auto-reply messages**
+
+> 參考官方文件：
+> [Get started with the Messaging API](https://developers.line.biz/en/docs/messaging-api/getting-started/)
 
 ### Discord Bot
 
@@ -79,6 +83,8 @@ LOG_LEVEL=info
 ```
 
 > LINE 目前可先留空；留空時 LINE webhook 會自動停用，不影響服務運行與 Discord 轉發。
+>
+> 注意：`LINE_CHANNEL_SECRET` 或 `LINE_CHANNEL_ACCESS_TOKEN` 若仍是 `your_...` placeholder，系統會視為未啟用。
 
 > ⚠️ `.env` 已列入 `.gitignore`，絕對不要 commit 進 Git。
 >
@@ -183,6 +189,23 @@ Unraid 部署建議：
 BASE_URL=https://relay.example.com ./test.sh
 ```
 
+### Generic Webhook（M6 額外來源）
+
+可用 `POST /webhook/generic` 直接接入額外來源，不需先實作 SDK。請求 JSON 範例：
+
+```json
+{
+  "sourceName": "Customer Portal",
+  "senderName": "alice@example.com",
+  "senderId": "customer-123",
+  "content": "請協助更新訂單狀態",
+  "sourceUrl": "https://portal.example.com/tickets/123",
+  "timestamp": "2026-06-03T10:20:30.000Z"
+}
+```
+
+最少必填欄位：`content`。
+
 ---
 
 ## API Endpoints
@@ -191,6 +214,7 @@ BASE_URL=https://relay.example.com ./test.sh
 |--------|------|------|
 | `GET` | `/health` | 存活確認，回傳 `{ status, uptime }` |
 | `POST` | `/webhook/line` | LINE Messaging API Webhook 接收端 |
+| `POST` | `/webhook/generic` | Generic Webhook 來源（M6 新增） |
 | `POST` | `/webhook/test-slack` | 手動觸發 Slack 測試通知 |
 | `GET` | `/admin` | Web Admin 管理介面 |
 | `GET` | `/api/admin/discord-rules` | 取得 Discord → Slack 規則清單 |
@@ -232,17 +256,25 @@ BASE_URL=https://relay.example.com ./test.sh
 
 ```
 src/
+├─ core/
+│  └─ relayPipeline.ts       共用轉發管線（來源解耦核心）
+├─ sources/
+│  ├─ types.ts               Source Adapter 介面
+│  ├─ sourceRegistry.ts      來源註冊與啟動
+│  ├─ discordSource.ts       Discord Adapter（M6）
+│  └─ lineSource.ts          LINE Adapter（M6 第一個新來源）
 ├─ index.ts                  Express 進入點
 ├─ config.ts                 環境變數驗證與型別
 ├─ logger.ts                 pino 日誌
 ├─ types.ts                  UnifiedMessage 共用型別
 ├─ routes/
 │  ├─ health.ts              GET /health
-│  └─ testSlack.ts           POST /webhook/test-slack
+│  ├─ testSlack.ts           POST /webhook/test-slack
+│  └─ genericWebhook.ts      POST /webhook/generic
 ├─ slack/
 │  └─ slackNotifier.ts       Slack Webhook 發送
-├─ normalizer/               訊息格式標準化（M2 起加入）
-└─ discord/                  Discord Bot 客戶端（M3 起加入）
+├─ normalizer/               訊息格式標準化
+└─ discord/                  相容層（導向 sources/discordSource）
 ```
 
 ---
@@ -274,6 +306,9 @@ src/
 - M3 已完成：Discord Bot 監聽、白名單過濾、訊息 normalize 並轉送 Slack。
 - M4 已完成：Web Admin 多組規則、來源下拉、Slack channel 與 mention 選項、規則編輯。
 - M5 已開始：GitHub Actions + GHCR image 發佈流程第一版。
+- M6 已開始：來源解耦與模組化（Source Adapter + Relay Pipeline）。
+- M6 第一個新來源已落地：LINE Source Adapter（`sources/lineSource.ts`）。
+- M6 額外來源已落地：`/webhook/generic`。
 - 下一步目標：補上 Web Admin 認證與部署 SOP。
 
 | Milestone | 狀態 | 內容 |
@@ -283,4 +318,5 @@ src/
 | M3 Discord → Slack | ✅ 完成 | Discord Bot、頻道監聽、白名單過濾 |
 | M4 Web Admin  | ✅ 完成 | WebAdmin 多組規則、下拉選單、標記設定、持久化設定 |
 | M5 Production | 🔧 進行中 | GHCR 發佈流程、Unraid 部署文件與版本化升級 |
+| M6 Modular Sources | 🔧 進行中 | Source Adapter 抽象、Discord 解耦、LINE 作為第一個新來源 |
 | M6 SOP | ⬜ 待做 | 團隊使用說明、異常排查 |

@@ -1,5 +1,5 @@
 export interface UnifiedMessage {
-  platform: 'LINE' | 'Discord';
+  platform: 'LINE' | 'Discord' | 'Generic';
   sourceType: 'group' | 'dm' | 'channel';
   sourceName: string;
   senderId: string;

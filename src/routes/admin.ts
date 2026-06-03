@@ -9,6 +9,7 @@ import {
   updateRelaySettings,
 } from '../admin/relayRuleStore.js';
 import { getDiscordRecentAuthorOptions, getDiscordSourceOptions } from '../discord/discordClient.js';
+import { getLineWebhookDebugState } from '../sources/lineSource.js';
 import { config } from '../config.js';
 import { logger } from '../logger.js';
 import type { DiscordRelayRule } from '../types.js';
@@ -166,6 +167,10 @@ router.get('/api/admin/discord-authors', (req, res) => {
   const guildId = typeof req.query.guildId === 'string' ? req.query.guildId.trim() : '';
   const authors = getDiscordRecentAuthorOptions(guildId || undefined);
   res.json({ ok: true, authors });
+});
+
+router.get('/api/admin/line-debug', (_req, res) => {
+  res.json({ ok: true, state: getLineWebhookDebugState() });
 });
 
 router.get('/api/admin/slack-options', async (_req, res) => {

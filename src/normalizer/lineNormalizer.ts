@@ -1,8 +1,4 @@
-import type {
-  MessageEvent,
-  TextEventMessage,
-  WebhookEvent,
-} from '@line/bot-sdk';
+import type { MessageEvent, WebhookEvent } from '@line/bot-sdk';
 import type { UnifiedMessage } from '../types.js';
 
 type LineSourceType = 'group' | 'dm';
@@ -29,25 +25,33 @@ function getSenderId(source: LineSource): string {
   return 'unknown';
 }
 
-function getTextMessage(event: WebhookEvent): TextEventMessage | null {
+function getMessageContent(event: WebhookEvent): string | null {
   if (event.type !== 'message') {
     return null;
   }
 
   const msgEvent = event as MessageEvent;
-  if (msgEvent.message.type !== 'text') {
-    return null;
+  if (msgEvent.message.type === 'text') {
+    return msgEvent.message.text;
   }
 
-  return msgEvent.message as TextEventMessage;
+  const messageType = msgEvent.message.type;
+  if (messageType === 'image') return '[LINE 圖片訊息]';
+  if (messageType === 'video') return '[LINE 影片訊息]';
+  if (messageType === 'audio') return '[LINE 語音訊息]';
+  if (messageType === 'file') return '[LINE 檔案訊息]';
+  if (messageType === 'sticker') return '[LINE 貼圖訊息]';
+  if (messageType === 'location') return '[LINE 位置訊息]';
+
+  return '[LINE 非文字訊息]';
 }
 
 export function normalizeLineEvent(
   event: WebhookEvent,
   senderName?: string,
 ): UnifiedMessage | null {
-  const textMessage = getTextMessage(event);
-  if (!textMessage) {
+  const content = getMessageContent(event);
+  if (!content) {
     return null;
   }
 
@@ -62,7 +66,7 @@ export function normalizeLineEvent(
     sourceName: getSourceName(event.source),
     senderId: getSenderId(event.source),
     senderName: senderName ?? getSenderId(event.source),
-    content: textMessage.text,
+    content,
     timestamp,
     raw: event,
   };
