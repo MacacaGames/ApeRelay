@@ -60,3 +60,51 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      - name: Set GHCR package visibility to public
+        if: github.event_name != 'pull_request'
+        continue-on-error: true
+        env:
+          OWNER: ${{ github.repository_owner }}
+          OWNER_TYPE: ${{ github.event.repository.owner.type }}
+          REPOSITORY: ${{ github.repository }}
+          GHCR_ADMIN_TOKEN: ${{ secrets.GHCR_ADMIN_TOKEN }}
+          GITHUB_TOKEN_FALLBACK: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -eu
+
+          PACKAGE_NAME="$(echo "${REPOSITORY#*/}" | tr '[:upper:]' '[:lower:]')"
+          TOKEN="${GHCR_ADMIN_TOKEN:-$GITHUB_TOKEN_FALLBACK}"
+
+          if [ -z "$TOKEN" ]; then
+            echo "No token available to set GHCR visibility."
+            exit 1
+          fi
+
+          if [ "$OWNER_TYPE" = "Organization" ]; then
+            API_URL="https://api.github.com/orgs/$OWNER/packages/container/$PACKAGE_NAME/visibility"
+          else
+            API_URL="https://api.github.com/users/$OWNER/packages/container/$PACKAGE_NAME/visibility"
+          fi
+
+          HTTP_CODE=$(curl -sS -o /tmp/ghcr_visibility_response.json -w "%{http_code}" \
+            -X PATCH \
+            -H "Authorization: Bearer $TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            "$API_URL" \
+            -d '{"visibility":"public"}')
+
+          if [ "$HTTP_CODE" -ge 200 ] && [ "$HTTP_CODE" -lt 300 ]; then
+            echo "GHCR package visibility is now public."
+            exit 0
+          fi
+
+          echo "Failed to set GHCR visibility via API. HTTP $HTTP_CODE"
+          cat /tmp/ghcr_visibility_response.json
+          exit 1
+
+      - name: Visibility fallback hint
+        if: github.event_name != 'pull_request' && failure()
+        run: |
+          echo "If the previous step failed, add a repository secret named GHCR_ADMIN_TOKEN (classic PAT) and rerun workflow."
+          echo "Then set package visibility once in GitHub Packages UI as fallback."

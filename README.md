@@ -112,6 +112,7 @@ docker compose logs -f
 - push 到 `master` / `main` 會自動 build 並推送 image 到 GHCR
 - 打 tag（例如 `v0.5.0`）會產生對應版本 tag
 - PR 只 build 不 push
+- push 後 workflow 會嘗試把 GHCR package 設成 public（供 Unraid 免認證拉取）
 
 Image 名稱格式：
 
@@ -132,6 +133,7 @@ ghcr.io/macacagames/aperelay:v0.5.0
 1. Repository 的 Actions 有啟用
 2. Repository 的 package 權限允許推送到 GHCR
 3. 若要讓 Unraid 可直接拉取，將 GHCR package visibility 設為可讀（public 或授權 token）
+4. 若 workflow 無法自動改 visibility，新增 repo secret：`GHCR_ADMIN_TOKEN`（classic PAT），再 rerun workflow 一次
 
 Unraid 部署建議：
 
