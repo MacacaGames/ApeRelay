@@ -50,41 +50,46 @@ async function fetchSlackOptions(): Promise<{
   const errors: string[] = [];
   let cursor = '';
 
-  do {
-    const query = new URLSearchParams({
-      types: 'public_channel,private_channel',
-      exclude_archived: 'true',
-      limit: '200',
-    });
+  try {
+    do {
+      const query = new URLSearchParams({
+        types: 'public_channel,private_channel',
+        exclude_archived: 'true',
+        limit: '200',
+      });
 
-    if (cursor) {
-      query.set('cursor', cursor);
-    }
+      if (cursor) {
+        query.set('cursor', cursor);
+      }
 
-    const res = await fetch(`https://slack.com/api/conversations.list?${query.toString()}`, {
-      method: 'GET',
-      headers,
-    });
+      const res = await fetch(`https://slack.com/api/conversations.list?${query.toString()}`, {
+        method: 'GET',
+        headers,
+      });
 
-    const json = (await res.json()) as {
-      ok: boolean;
-      error?: string;
-      channels?: Array<{ id: string; name: string }>;
-      response_metadata?: { next_cursor?: string };
-    };
+      const json = (await res.json()) as {
+        ok: boolean;
+        error?: string;
+        channels?: Array<{ id: string; name: string }>;
+        response_metadata?: { next_cursor?: string };
+      };
 
-    if (!json.ok) {
-      logger.warn({ error: json.error }, 'Unable to fetch Slack channels for admin dropdown');
-      errors.push(`channels: ${json.error ?? 'unknown_error'}`);
-      break;
-    }
+      if (!json.ok) {
+        logger.warn({ error: json.error }, 'Unable to fetch Slack channels for admin dropdown');
+        errors.push(`channels: ${json.error ?? 'unknown_error'}`);
+        break;
+      }
 
-    for (const item of json.channels ?? []) {
-      channels.push({ id: item.id, name: item.name });
-    }
+      for (const item of json.channels ?? []) {
+        channels.push({ id: item.id, name: item.name });
+      }
 
-    cursor = json.response_metadata?.next_cursor ?? '';
-  } while (cursor);
+      cursor = json.response_metadata?.next_cursor ?? '';
+    } while (cursor);
+  } catch (err) {
+    logger.warn({ err }, 'Slack conversations.list request failed');
+    errors.push('channels: request_failed');
+  }
 
   const users: SlackUserOption[] = [];
   try {
@@ -264,16 +269,21 @@ router.get('/api/admin/line-debug', (_req, res) => {
 });
 
 router.get('/api/admin/slack-options', async (_req, res) => {
-  const options = await fetchSlackOptions();
-  res.json({
-    ok: true,
-    ...options,
-    loaded: {
-      channels: options.channels.length,
-      users: options.users.length,
-      usergroups: options.usergroups.length,
-    },
-  });
+  try {
+    const options = await fetchSlackOptions();
+    res.json({
+      ok: true,
+      ...options,
+      loaded: {
+        channels: options.channels.length,
+        users: options.users.length,
+        usergroups: options.usergroups.length,
+      },
+    });
+  } catch (err) {
+    logger.error({ err }, 'fetchSlackOptions unexpected error');
+    res.json({ ok: true, channels: [], users: [], usergroups: [], errors: ['fetch_failed'], loaded: { channels: 0, users: 0, usergroups: 0 } });
+  }
 });
 
 router.get('/api/admin/discord-rules', async (_req, res) => {
