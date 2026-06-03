@@ -8,7 +8,38 @@ export interface UnifiedMessage {
   timestamp: Date;
   sourceUrl?: string;
   attachmentUrls?: string[];
+  mentionedExternalUserIds?: string[];
   raw?: unknown;
+}
+
+export interface DiscordMentionMapping {
+  id: string;
+  enabled: boolean;
+  discordUserId: string;
+  slackMention: string;
+  label: string;
+}
+
+export interface LineMentionMapping {
+  id: string;
+  enabled: boolean;
+  lineUserId: string;
+  lineChannelId?: string;
+  slackMention: string;
+  label: string;
+}
+
+export interface DiscordMentionTriggerConfig {
+  enabled: boolean;
+  allowedGuildIds: string[];
+  mappings: DiscordMentionMapping[];
+}
+
+export interface LineMentionTriggerConfig {
+  enabled: boolean;
+  allowedGroupIds: string[];
+  excludedGroupIds: string[];
+  mappings: LineMentionMapping[];
 }
 
 export interface DiscordRelayRule {

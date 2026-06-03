@@ -40,6 +40,7 @@ export function normalizeDiscordMessage(message: Message): UnifiedMessage | null
 
   const guildName = message.guild.name;
   const channelName = message.channel.name;
+  const mentionedExternalUserIds = Array.from(message.mentions.users.keys());
 
   return {
     platform: 'Discord',
@@ -51,6 +52,7 @@ export function normalizeDiscordMessage(message: Message): UnifiedMessage | null
     timestamp: toDate(message.createdTimestamp),
     sourceUrl: message.url,
     attachmentUrls,
+    mentionedExternalUserIds,
     raw: {
       guildId: message.guild.id,
       channelId: message.channel.id,

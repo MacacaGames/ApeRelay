@@ -21,7 +21,7 @@ function formatPlatformLabel(platform: UnifiedMessage['platform']): string {
   return '🔗 Webhook';
 }
 
-function buildSlackText(msg: UnifiedMessage, mentionText: string): string {
+function buildSlackText(msg: UnifiedMessage, mentionText: string, triggerReason: string): string {
   const sourceLabel =
     msg.platform === 'LINE'
       ? msg.sourceType === 'group'
@@ -51,6 +51,7 @@ function buildSlackText(msg: UnifiedMessage, mentionText: string): string {
   lines.push(
     `發訊者：${msg.senderName}`,
     `時間：${formatTimestamp(msg.timestamp)}`,
+    `觸發：${triggerReason}`,
     `通知對象：${mentionText || '無'}`,
   );
 
@@ -78,7 +79,7 @@ function mrkdwnField(label: string, value: string): Record<string, string> {
   };
 }
 
-function buildSlackBlocks(msg: UnifiedMessage, mentionText: string) {
+function buildSlackBlocks(msg: UnifiedMessage, mentionText: string, triggerReason: string) {
   const sourceLabel =
     msg.platform === 'LINE'
       ? msg.sourceType === 'group'
@@ -107,6 +108,7 @@ function buildSlackBlocks(msg: UnifiedMessage, mentionText: string) {
 
   fields.push(mrkdwnField('發訊者', msg.senderName));
   fields.push(mrkdwnField('時間', formatTimestamp(msg.timestamp)));
+  fields.push(mrkdwnField('觸發', triggerReason));
 
   const blocks: Array<Record<string, unknown>> = [];
 
@@ -209,12 +211,13 @@ export async function sendToSlack(
   msg: UnifiedMessage,
   channel?: string,
   mentionTargets?: string[],
+  triggerReason = 'Rule',
 ): Promise<void> {
   const normalizedMentionTargets = (mentionTargets ?? [])
     .map((value) => normalizeMentionTarget(value))
     .filter(Boolean);
   const mentionText = Array.from(new Set(normalizedMentionTargets)).join(' ');
-  const fallbackText = buildSlackText(msg, mentionText);
+  const fallbackText = buildSlackText(msg, mentionText, triggerReason);
   const targetChannel = channel ?? config.slack.defaultChannel;
 
   const response = await fetch(SLACK_API_URL, {
@@ -226,7 +229,7 @@ export async function sendToSlack(
     body: JSON.stringify({
       channel: targetChannel,
       text: fallbackText,
-      blocks: buildSlackBlocks(msg, mentionText),
+      blocks: buildSlackBlocks(msg, mentionText, triggerReason),
       mrkdwn: true,
       link_names: true,
       unfurl_links: false,

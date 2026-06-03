@@ -1,5 +1,6 @@
 import { getDiscordRelayRuntimeConfig } from '../admin/relayRuleStore.js';
 import { getLineRelayRuntimeConfig } from '../admin/relayRuleStore.js';
+import { getMentionTriggerRuntimeConfig } from '../admin/relayRuleStore.js';
 import { config } from '../config.js';
 import { logger } from '../logger.js';
 import { sendToSlack } from '../slack/slackNotifier.js';
@@ -33,11 +34,15 @@ type AllowCheck = {
   channelAllowed: boolean;
 };
 
+type TriggerReason = 'Rule' | 'Mention' | 'Rule + Mention';
+
 function findMatchingRule(
   rules: DiscordRelayRule[],
   guildId: string,
   channelCandidateIds: string[],
 ): DiscordRelayRule | null {
+  let fallbackGuildWideRule: DiscordRelayRule | null = null;
+
   for (const rule of rules) {
     if (!rule.enabled) {
       continue;
@@ -47,14 +52,20 @@ function findMatchingRule(
       continue;
     }
 
-    if (!channelCandidateIds.includes(rule.sourceChannelId)) {
+    const sourceChannelId = String(rule.sourceChannelId ?? '').trim();
+    if (!sourceChannelId) {
+      fallbackGuildWideRule = fallbackGuildWideRule ?? rule;
+      continue;
+    }
+
+    if (!channelCandidateIds.includes(sourceChannelId)) {
       continue;
     }
 
     return rule;
   }
 
-  return null;
+  return fallbackGuildWideRule;
 }
 
 function shouldExcludeAuthor(
@@ -113,6 +124,17 @@ function shouldExcludeLineSpeaker(
   return excluded.has(speakerId);
 }
 
+function isGlobalExcludedLineSpeaker(
+  globalExcludedLineSpeakerIds: string[],
+  speakerId: string | undefined,
+): boolean {
+  if (!speakerId) {
+    return false;
+  }
+
+  return globalExcludedLineSpeakerIds.includes(speakerId);
+}
+
 function isDiscordAllowlisted(guildId: string | undefined, channelCandidateIds: string[]): AllowCheck {
   const guildAllowed =
     !guildId ||
@@ -130,6 +152,90 @@ function isDiscordAllowlisted(guildId: string | undefined, channelCandidateIds: 
   };
 }
 
+function mergeMentions(...mentionLists: Array<string[] | undefined>): string[] {
+  const merged = new Set<string>();
+  for (const list of mentionLists) {
+    for (const item of list ?? []) {
+      const value = String(item).trim();
+      if (value) {
+        merged.add(value);
+      }
+    }
+  }
+  return Array.from(merged);
+}
+
+function resolveDiscordMentionTriggerMentions(
+  guildId: string | undefined,
+  mentionedExternalUserIds: string[],
+  runtimeConfig: Awaited<ReturnType<typeof getMentionTriggerRuntimeConfig>>,
+): string[] {
+  const trigger = runtimeConfig.discordMentionTrigger;
+  if (!trigger.enabled) {
+    return [];
+  }
+
+  if (trigger.allowedGuildIds.length > 0 && (!guildId || !trigger.allowedGuildIds.includes(guildId))) {
+    return [];
+  }
+
+  const mentionedSet = new Set(mentionedExternalUserIds.map((id) => String(id).trim()).filter(Boolean));
+  if (mentionedSet.size === 0) {
+    return [];
+  }
+
+  return trigger.mappings
+    .filter((mapping) => mapping.enabled && mapping.discordUserId && mapping.slackMention)
+    .filter((mapping) => mentionedSet.has(mapping.discordUserId))
+    .map((mapping) => mapping.slackMention.trim())
+    .filter(Boolean);
+}
+
+function resolveLineMentionTriggerMentions(
+  groupId: string | undefined,
+  mentionedExternalUserIds: string[],
+  runtimeConfig: Awaited<ReturnType<typeof getMentionTriggerRuntimeConfig>>,
+): string[] {
+  const trigger = runtimeConfig.lineMentionTrigger;
+  if (!trigger.enabled) {
+    return [];
+  }
+
+  if (groupId && trigger.excludedGroupIds.includes(groupId)) {
+    return [];
+  }
+
+  if (trigger.allowedGroupIds.length > 0) {
+    if (!groupId || !trigger.allowedGroupIds.includes(groupId)) {
+      return [];
+    }
+  }
+
+  const mentionedSet = new Set(mentionedExternalUserIds.map((id) => String(id).trim()).filter(Boolean));
+  if (mentionedSet.size === 0) {
+    return [];
+  }
+
+  return trigger.mappings
+    .filter((mapping) => mapping.enabled && mapping.lineUserId && mapping.slackMention)
+    .filter((mapping) => {
+      const channelOk = !mapping.lineChannelId || mapping.lineChannelId === 'default';
+      return channelOk && mentionedSet.has(mapping.lineUserId);
+    })
+    .map((mapping) => mapping.slackMention.trim())
+    .filter(Boolean);
+}
+
+function getTriggerReason(ruleMatched: boolean, mentionMatched: boolean): TriggerReason {
+  if (ruleMatched && mentionMatched) {
+    return 'Rule + Mention';
+  }
+  if (mentionMatched) {
+    return 'Mention';
+  }
+  return 'Rule';
+}
+
 export async function relayIncomingMessage(input: RelayInput): Promise<RelayResult> {
   if (input.source === 'line') {
     const lineCtx = input.line;
@@ -139,19 +245,21 @@ export async function relayIncomingMessage(input: RelayInput): Promise<RelayResu
     }
 
     const runtimeConfig = await getLineRelayRuntimeConfig();
+    const mentionTriggerRuntime = await getMentionTriggerRuntimeConfig();
     const matchedRule = findMatchingLineRule(runtimeConfig.rules, lineCtx.groupId);
 
-    if (!matchedRule) {
+    if (isGlobalExcludedLineSpeaker(runtimeConfig.globalExcludedLineSpeakerIds, lineCtx.speakerId)) {
       logger.info(
         {
           sourceGroupId: lineCtx.groupId,
+          speakerId: lineCtx.speakerId,
         },
-        'Skip LINE message because no matching enabled LINE rule',
+        'Skip LINE message due to global excluded speaker',
       );
-      return { forwarded: false, reason: 'line-no-matching-rule' };
+      return { forwarded: false, reason: 'line-speaker-excluded-global' };
     }
 
-    if (shouldExcludeLineSpeaker(matchedRule, runtimeConfig.globalExcludedLineSpeakerIds, lineCtx.speakerId)) {
+    if (matchedRule && shouldExcludeLineSpeaker(matchedRule, runtimeConfig.globalExcludedLineSpeakerIds, lineCtx.speakerId)) {
       logger.info(
         {
           sourceGroupId: lineCtx.groupId,
@@ -163,12 +271,30 @@ export async function relayIncomingMessage(input: RelayInput): Promise<RelayResu
       return { forwarded: false, reason: 'line-speaker-excluded' };
     }
 
-    await sendToSlack(input.message, matchedRule.targetSlackChannel, matchedRule.mentionTargets);
+    const triggerMentions = resolveLineMentionTriggerMentions(
+      lineCtx.groupId,
+      input.message.mentionedExternalUserIds ?? [],
+      mentionTriggerRuntime,
+    );
+
+    if (!matchedRule && triggerMentions.length === 0) {
+      logger.info(
+        {
+          sourceGroupId: lineCtx.groupId,
+        },
+        'Skip LINE message because neither rule nor mention trigger matched',
+      );
+      return { forwarded: false, reason: 'line-no-match' };
+    }
+
+    const mergedMentions = mergeMentions(matchedRule?.mentionTargets, triggerMentions);
+    const reason = getTriggerReason(Boolean(matchedRule), triggerMentions.length > 0);
+    await sendToSlack(input.message, matchedRule?.targetSlackChannel, mergedMentions, reason);
     return { forwarded: true };
   }
 
   if (input.source !== 'discord') {
-    await sendToSlack(input.message);
+    await sendToSlack(input.message, undefined, undefined, 'Rule');
     return { forwarded: true };
   }
 
@@ -179,9 +305,18 @@ export async function relayIncomingMessage(input: RelayInput): Promise<RelayResu
   }
 
   const runtimeConfig = await getDiscordRelayRuntimeConfig();
+  const mentionTriggerRuntime = await getMentionTriggerRuntimeConfig();
   const matchedRule = discordCtx.guildId
     ? findMatchingRule(runtimeConfig.rules, discordCtx.guildId, discordCtx.channelCandidateIds)
     : null;
+
+  const triggerMentions = resolveDiscordMentionTriggerMentions(
+    discordCtx.guildId,
+    input.message.mentionedExternalUserIds ?? [],
+    mentionTriggerRuntime,
+  );
+
+  const mentionTriggerMatched = triggerMentions.length > 0;
 
   if (matchedRule) {
     if (shouldExcludeAuthor(discordCtx.authorId, runtimeConfig.globalExcludedAuthorIds, matchedRule)) {
@@ -196,15 +331,39 @@ export async function relayIncomingMessage(input: RelayInput): Promise<RelayResu
       return { forwarded: false, reason: 'excluded-author' };
     }
 
-    await sendToSlack(input.message, matchedRule.targetSlackChannel, matchedRule.mentionTargets);
+    const mergedMentions = mergeMentions(matchedRule.mentionTargets, triggerMentions);
+    const reason = getTriggerReason(true, mentionTriggerMatched);
+    await sendToSlack(input.message, matchedRule.targetSlackChannel, mergedMentions, reason);
     logger.info(
       {
         messageId: discordCtx.messageId,
         ruleId: matchedRule.id,
         ruleName: matchedRule.name,
-        mentionTargets: matchedRule.mentionTargets ?? [],
+        mentionTargets: mergedMentions,
+        triggerReason: reason,
       },
       'Forwarded Discord message via admin rule',
+    );
+    return { forwarded: true };
+  }
+
+  if (shouldExcludeAuthor(discordCtx.authorId, runtimeConfig.globalExcludedAuthorIds)) {
+    logger.info(
+      { messageId: discordCtx.messageId, authorId: discordCtx.authorId },
+      'Skip Discord message due to excluded author',
+    );
+    return { forwarded: false, reason: 'excluded-author' };
+  }
+
+  if (mentionTriggerMatched) {
+    await sendToSlack(input.message, undefined, triggerMentions, 'Mention');
+    logger.info(
+      {
+        messageId: discordCtx.messageId,
+        guildId: discordCtx.guildId,
+        triggerMentions,
+      },
+      'Forwarded Discord message via mention trigger',
     );
     return { forwarded: true };
   }
@@ -229,14 +388,6 @@ export async function relayIncomingMessage(input: RelayInput): Promise<RelayResu
     return { forwarded: false, reason: 'discord-no-matching-rule' };
   }
 
-  if (shouldExcludeAuthor(discordCtx.authorId, runtimeConfig.globalExcludedAuthorIds)) {
-    logger.info(
-      { messageId: discordCtx.messageId, authorId: discordCtx.authorId },
-      'Skip Discord message due to excluded author',
-    );
-    return { forwarded: false, reason: 'excluded-author' };
-  }
-
   const allowCheck = isDiscordAllowlisted(discordCtx.guildId, discordCtx.channelCandidateIds);
   if (!allowCheck.allowed) {
     logger.info(
@@ -253,6 +404,6 @@ export async function relayIncomingMessage(input: RelayInput): Promise<RelayResu
     return { forwarded: false, reason: 'allowlist-mismatch' };
   }
 
-  await sendToSlack(input.message);
+  await sendToSlack(input.message, undefined, undefined, 'Rule');
   return { forwarded: true };
 }

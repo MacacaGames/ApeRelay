@@ -46,6 +46,36 @@ function getMessageContent(event: WebhookEvent): string | null {
   return '[LINE 非文字訊息]';
 }
 
+function getMentionedUserIds(event: WebhookEvent): string[] {
+  if (event.type !== 'message') {
+    return [];
+  }
+
+  const msgEvent = event as MessageEvent;
+  if (msgEvent.message.type !== 'text') {
+    return [];
+  }
+
+  const message = msgEvent.message as {
+    mention?: {
+      mentionees?: Array<{
+        type?: string;
+        userId?: string;
+      }>;
+    };
+  };
+
+  const mentionees = message.mention?.mentionees;
+  if (!Array.isArray(mentionees)) {
+    return [];
+  }
+
+  return mentionees
+    .filter((item) => item.type === 'user' && typeof item.userId === 'string')
+    .map((item) => String(item.userId).trim())
+    .filter(Boolean);
+}
+
 export function normalizeLineEvent(
   event: WebhookEvent,
   senderName?: string,
@@ -68,6 +98,7 @@ export function normalizeLineEvent(
     senderName: senderName ?? getSenderId(event.source),
     content,
     timestamp,
+    mentionedExternalUserIds: getMentionedUserIds(event),
     raw: event,
   };
 }

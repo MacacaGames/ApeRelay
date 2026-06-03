@@ -1,7 +1,14 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import crypto from 'node:crypto';
-import type { DiscordRelayRule, LineRelayRule } from '../types.js';
+import type {
+  DiscordMentionMapping,
+  DiscordMentionTriggerConfig,
+  DiscordRelayRule,
+  LineMentionMapping,
+  LineMentionTriggerConfig,
+  LineRelayRule,
+} from '../types.js';
 
 export type RelayRuleImportMode = 'replace' | 'merge';
 
@@ -12,6 +19,8 @@ export type RelayRuleExportData = {
   lineRules: LineRelayRule[];
   globalExcludedAuthorIds: string[];
   globalExcludedLineSpeakerIds: string[];
+  discordMentionTrigger: DiscordMentionTriggerConfig;
+  lineMentionTrigger: LineMentionTriggerConfig;
 };
 
 type RelayRuleStoreData = {
@@ -19,6 +28,8 @@ type RelayRuleStoreData = {
   lineRules: LineRelayRule[];
   globalExcludedAuthorIds: string[];
   globalExcludedLineSpeakerIds: string[];
+  discordMentionTrigger: DiscordMentionTriggerConfig;
+  lineMentionTrigger: LineMentionTriggerConfig;
 };
 
 const DATA_DIR = path.join(process.cwd(), 'data');
@@ -30,9 +41,67 @@ function normalizeStringArray(value: unknown): string[] {
     : [];
 }
 
+function normalizeDiscordMentionMapping(value: unknown): DiscordMentionMapping | null {
+  const raw = value as Partial<DiscordMentionMapping> | null;
+  if (!raw || !raw.discordUserId || !raw.slackMention) {
+    return null;
+  }
+
+  return {
+    id: raw.id ? String(raw.id) : crypto.randomUUID(),
+    enabled: Boolean(raw.enabled ?? true),
+    discordUserId: String(raw.discordUserId).trim(),
+    slackMention: String(raw.slackMention).trim(),
+    label: String(raw.label ?? raw.discordUserId).trim(),
+  };
+}
+
+function normalizeLineMentionMapping(value: unknown): LineMentionMapping | null {
+  const raw = value as Partial<LineMentionMapping> | null;
+  if (!raw || !raw.lineUserId || !raw.slackMention) {
+    return null;
+  }
+
+  return {
+    id: raw.id ? String(raw.id) : crypto.randomUUID(),
+    enabled: Boolean(raw.enabled ?? true),
+    lineUserId: String(raw.lineUserId).trim(),
+    lineChannelId: raw.lineChannelId ? String(raw.lineChannelId).trim() : 'default',
+    slackMention: String(raw.slackMention).trim(),
+    label: String(raw.label ?? raw.lineUserId).trim(),
+  };
+}
+
+function normalizeDiscordMentionTrigger(value: unknown): DiscordMentionTriggerConfig {
+  const raw = value as Partial<DiscordMentionTriggerConfig> | null;
+  const mappings = Array.isArray(raw?.mappings)
+    ? raw.mappings.map((item) => normalizeDiscordMentionMapping(item)).filter(Boolean) as DiscordMentionMapping[]
+    : [];
+
+  return {
+    enabled: Boolean(raw?.enabled ?? false),
+    allowedGuildIds: normalizeStringArray(raw?.allowedGuildIds),
+    mappings,
+  };
+}
+
+function normalizeLineMentionTrigger(value: unknown): LineMentionTriggerConfig {
+  const raw = value as Partial<LineMentionTriggerConfig> | null;
+  const mappings = Array.isArray(raw?.mappings)
+    ? raw.mappings.map((item) => normalizeLineMentionMapping(item)).filter(Boolean) as LineMentionMapping[]
+    : [];
+
+  return {
+    enabled: Boolean(raw?.enabled ?? false),
+    allowedGroupIds: normalizeStringArray(raw?.allowedGroupIds),
+    excludedGroupIds: normalizeStringArray(raw?.excludedGroupIds),
+    mappings,
+  };
+}
+
 function normalizeDiscordRuleForImport(value: unknown, preserveId: boolean): DiscordRelayRule | null {
   const raw = value as Partial<DiscordRelayRule> | null;
-  if (!raw || !raw.name || !raw.sourceGuildId || !raw.sourceChannelId || !raw.targetSlackChannel) {
+  if (!raw || !raw.name || !raw.sourceGuildId || !raw.targetSlackChannel) {
     return null;
   }
 
@@ -41,7 +110,7 @@ function normalizeDiscordRuleForImport(value: unknown, preserveId: boolean): Dis
     name: String(raw.name).trim(),
     enabled: Boolean(raw.enabled ?? true),
     sourceGuildId: String(raw.sourceGuildId).trim(),
-    sourceChannelId: String(raw.sourceChannelId).trim(),
+    sourceChannelId: String(raw.sourceChannelId ?? '').trim(),
     targetSlackChannel: String(raw.targetSlackChannel).trim(),
     mentionTargets: normalizeStringArray(raw.mentionTargets),
     excludedAuthorIds: normalizeStringArray(raw.excludedAuthorIds),
@@ -76,6 +145,17 @@ async function ensureStoreFile(): Promise<void> {
       lineRules: [],
       globalExcludedAuthorIds: [],
       globalExcludedLineSpeakerIds: [],
+      discordMentionTrigger: {
+        enabled: false,
+        allowedGuildIds: [],
+        mappings: [],
+      },
+      lineMentionTrigger: {
+        enabled: false,
+        allowedGroupIds: [],
+        excludedGroupIds: [],
+        mappings: [],
+      },
     };
     await fs.writeFile(DATA_FILE, JSON.stringify(initialData, null, 2), 'utf8');
   }
@@ -102,7 +182,7 @@ async function readStore(): Promise<RelayRuleStoreData> {
       name: String(raw.name),
       enabled: Boolean(raw.enabled),
       sourceGuildId: String(raw.sourceGuildId),
-      sourceChannelId: String(raw.sourceChannelId),
+      sourceChannelId: String(raw.sourceChannelId ?? ''),
       targetSlackChannel: String(raw.targetSlackChannel),
       mentionTargets,
       excludedAuthorIds: Array.isArray(raw.excludedAuthorIds)
@@ -140,7 +220,14 @@ async function readStore(): Promise<RelayRuleStoreData> {
     };
   });
 
-  return { discordRules, lineRules, globalExcludedAuthorIds, globalExcludedLineSpeakerIds };
+  return {
+    discordRules,
+    lineRules,
+    globalExcludedAuthorIds,
+    globalExcludedLineSpeakerIds,
+    discordMentionTrigger: normalizeDiscordMentionTrigger(parsed.discordMentionTrigger),
+    lineMentionTrigger: normalizeLineMentionTrigger(parsed.lineMentionTrigger),
+  };
 }
 
 async function writeStore(data: RelayRuleStoreData): Promise<void> {
@@ -156,11 +243,15 @@ export async function getDiscordRelayRules(): Promise<DiscordRelayRule[]> {
 export async function getRelaySettings(): Promise<{
   globalExcludedAuthorIds: string[];
   globalExcludedLineSpeakerIds: string[];
+  discordMentionTrigger: DiscordMentionTriggerConfig;
+  lineMentionTrigger: LineMentionTriggerConfig;
 }> {
   const store = await readStore();
   return {
     globalExcludedAuthorIds: store.globalExcludedAuthorIds,
     globalExcludedLineSpeakerIds: store.globalExcludedLineSpeakerIds,
+    discordMentionTrigger: store.discordMentionTrigger,
+    lineMentionTrigger: store.lineMentionTrigger,
   };
 }
 
@@ -172,9 +263,13 @@ export async function getLineRelayRules(): Promise<LineRelayRule[]> {
 export async function updateRelaySettings(patch: {
   globalExcludedAuthorIds?: string[];
   globalExcludedLineSpeakerIds?: string[];
+  discordMentionTrigger?: Partial<DiscordMentionTriggerConfig>;
+  lineMentionTrigger?: Partial<LineMentionTriggerConfig>;
 }): Promise<{
   globalExcludedAuthorIds: string[];
   globalExcludedLineSpeakerIds: string[];
+  discordMentionTrigger: DiscordMentionTriggerConfig;
+  lineMentionTrigger: LineMentionTriggerConfig;
 }> {
   const store = await readStore();
 
@@ -190,11 +285,29 @@ export async function updateRelaySettings(patch: {
       .filter(Boolean);
   }
 
+  if (patch.discordMentionTrigger) {
+    const next = {
+      ...store.discordMentionTrigger,
+      ...patch.discordMentionTrigger,
+    };
+    store.discordMentionTrigger = normalizeDiscordMentionTrigger(next);
+  }
+
+  if (patch.lineMentionTrigger) {
+    const next = {
+      ...store.lineMentionTrigger,
+      ...patch.lineMentionTrigger,
+    };
+    store.lineMentionTrigger = normalizeLineMentionTrigger(next);
+  }
+
   await writeStore(store);
 
   return {
     globalExcludedAuthorIds: store.globalExcludedAuthorIds,
     globalExcludedLineSpeakerIds: store.globalExcludedLineSpeakerIds,
+    discordMentionTrigger: store.discordMentionTrigger,
+    lineMentionTrigger: store.lineMentionTrigger,
   };
 }
 
@@ -207,6 +320,8 @@ export async function exportRelayRules(): Promise<RelayRuleExportData> {
     lineRules: store.lineRules,
     globalExcludedAuthorIds: store.globalExcludedAuthorIds,
     globalExcludedLineSpeakerIds: store.globalExcludedLineSpeakerIds,
+    discordMentionTrigger: store.discordMentionTrigger,
+    lineMentionTrigger: store.lineMentionTrigger,
   };
 }
 
@@ -218,6 +333,8 @@ export async function importRelayRules(
   lineRules: number;
   globalExcludedAuthorIds: number;
   globalExcludedLineSpeakerIds: number;
+  discordMentionMappings: number;
+  lineMentionMappings: number;
 }> {
   const raw = payload as Partial<RelayRuleStoreData> | null;
   if (!raw || !Array.isArray(raw.discordRules) || !Array.isArray(raw.lineRules)) {
@@ -234,9 +351,18 @@ export async function importRelayRules(
 
   const globalExcludedAuthorIds = normalizeStringArray(raw.globalExcludedAuthorIds);
   const globalExcludedLineSpeakerIds = normalizeStringArray(raw.globalExcludedLineSpeakerIds);
+  const discordMentionTrigger = normalizeDiscordMentionTrigger(raw.discordMentionTrigger);
+  const lineMentionTrigger = normalizeLineMentionTrigger(raw.lineMentionTrigger);
   const store = mode === 'merge'
     ? await readStore()
-    : { discordRules: [], lineRules: [], globalExcludedAuthorIds: [], globalExcludedLineSpeakerIds: [] };
+    : {
+      discordRules: [],
+      lineRules: [],
+      globalExcludedAuthorIds: [],
+      globalExcludedLineSpeakerIds: [],
+      discordMentionTrigger: { enabled: false, allowedGuildIds: [], mappings: [] },
+      lineMentionTrigger: { enabled: false, allowedGroupIds: [], excludedGroupIds: [], mappings: [] },
+    };
 
   store.discordRules = store.discordRules.concat(discordRules as DiscordRelayRule[]);
   store.lineRules = store.lineRules.concat(lineRules as LineRelayRule[]);
@@ -251,6 +377,23 @@ export async function importRelayRules(
       : globalExcludedLineSpeakerIds,
   ));
 
+  if (mode === 'merge') {
+    store.discordMentionTrigger = normalizeDiscordMentionTrigger({
+      enabled: store.discordMentionTrigger.enabled || discordMentionTrigger.enabled,
+      allowedGuildIds: Array.from(new Set(store.discordMentionTrigger.allowedGuildIds.concat(discordMentionTrigger.allowedGuildIds))),
+      mappings: store.discordMentionTrigger.mappings.concat(discordMentionTrigger.mappings),
+    });
+    store.lineMentionTrigger = normalizeLineMentionTrigger({
+      enabled: store.lineMentionTrigger.enabled || lineMentionTrigger.enabled,
+      allowedGroupIds: Array.from(new Set(store.lineMentionTrigger.allowedGroupIds.concat(lineMentionTrigger.allowedGroupIds))),
+      excludedGroupIds: Array.from(new Set(store.lineMentionTrigger.excludedGroupIds.concat(lineMentionTrigger.excludedGroupIds))),
+      mappings: store.lineMentionTrigger.mappings.concat(lineMentionTrigger.mappings),
+    });
+  } else {
+    store.discordMentionTrigger = discordMentionTrigger;
+    store.lineMentionTrigger = lineMentionTrigger;
+  }
+
   await writeStore(store);
 
   return {
@@ -258,6 +401,8 @@ export async function importRelayRules(
     lineRules: lineRules.length,
     globalExcludedAuthorIds: globalExcludedAuthorIds.length,
     globalExcludedLineSpeakerIds: globalExcludedLineSpeakerIds.length,
+    discordMentionMappings: discordMentionTrigger.mappings.length,
+    lineMentionMappings: lineMentionTrigger.mappings.length,
   };
 }
 
@@ -280,6 +425,17 @@ export async function getLineRelayRuntimeConfig(): Promise<{
   return {
     rules: store.lineRules,
     globalExcludedLineSpeakerIds: store.globalExcludedLineSpeakerIds,
+  };
+}
+
+export async function getMentionTriggerRuntimeConfig(): Promise<{
+  discordMentionTrigger: DiscordMentionTriggerConfig;
+  lineMentionTrigger: LineMentionTriggerConfig;
+}> {
+  const store = await readStore();
+  return {
+    discordMentionTrigger: store.discordMentionTrigger,
+    lineMentionTrigger: store.lineMentionTrigger,
   };
 }
 

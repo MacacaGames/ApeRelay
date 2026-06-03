@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import crypto from 'node:crypto';
 import { fetch } from 'undici';
 import {
   createDiscordRelayRule,
@@ -19,7 +20,14 @@ import { getDiscordRecentAuthorOptions, getDiscordSourceOptions } from '../disco
 import { config } from '../config.js';
 import { logger } from '../logger.js';
 import { getLineRecentGroupOptions, getLineWebhookDebugState } from '../sources/lineSource.js';
-import type { DiscordRelayRule, LineRelayRule } from '../types.js';
+import type {
+  DiscordMentionMapping,
+  DiscordMentionTriggerConfig,
+  DiscordRelayRule,
+  LineMentionMapping,
+  LineMentionTriggerConfig,
+  LineRelayRule,
+} from '../types.js';
 
 const router = Router();
 
@@ -145,17 +153,16 @@ async function fetchSlackOptions(): Promise<{
   return { channels, users, usergroups, errors };
 }
 
-function parseDiscordRuleInput(input: Partial<DiscordRelayRule>): Omit<DiscordRelayRule, 'id'> | null {
-  if (!input.name || !input.sourceGuildId || !input.sourceChannelId || !input.targetSlackChannel) {
-    return null;
-  }
-
-  return {
-    name: String(input.name).trim(),
+function parseDiscordRuleInput(input: Partial<DiscordRelayRule>): {
+  payload?: Omit<DiscordRelayRule, 'id'>;
+  missingFields: string[];
+} {
+  const payload: Omit<DiscordRelayRule, 'id'> = {
+    name: String(input.name ?? '').trim(),
     enabled: Boolean(input.enabled ?? true),
-    sourceGuildId: String(input.sourceGuildId).trim(),
-    sourceChannelId: String(input.sourceChannelId).trim(),
-    targetSlackChannel: String(input.targetSlackChannel).trim(),
+    sourceGuildId: String(input.sourceGuildId ?? '').trim(),
+    sourceChannelId: String(input.sourceChannelId ?? '').trim(),
+    targetSlackChannel: String(input.targetSlackChannel ?? '').trim(),
     mentionTargets: Array.isArray(input.mentionTargets)
       ? input.mentionTargets.map((value) => String(value).trim()).filter(Boolean)
       : [],
@@ -163,24 +170,76 @@ function parseDiscordRuleInput(input: Partial<DiscordRelayRule>): Omit<DiscordRe
       ? input.excludedAuthorIds.map((value) => String(value).trim()).filter(Boolean)
       : [],
   };
-}
 
-function parseLineRuleInput(input: Partial<LineRelayRule>): Omit<LineRelayRule, 'id'> | null {
-  if (!input.name || !input.sourceGroupId || !input.targetSlackChannel) {
-    return null;
+  const missingFields: string[] = [];
+  if (!payload.name) missingFields.push('規則名稱');
+  if (!payload.sourceGuildId) missingFields.push('來源 Guild');
+  if (!payload.targetSlackChannel) missingFields.push('目標 Slack 頻道');
+
+  if (missingFields.length > 0) {
+    return { missingFields };
   }
 
-  return {
-    name: String(input.name).trim(),
+  return { payload, missingFields: [] };
+}
+
+function parseLineRuleInput(input: Partial<LineRelayRule>): {
+  payload?: Omit<LineRelayRule, 'id'>;
+  missingFields: string[];
+} {
+  const payload: Omit<LineRelayRule, 'id'> = {
+    name: String(input.name ?? '').trim(),
     enabled: Boolean(input.enabled ?? true),
-    sourceGroupId: String(input.sourceGroupId).trim(),
-    targetSlackChannel: String(input.targetSlackChannel).trim(),
+    sourceGroupId: String(input.sourceGroupId ?? '').trim(),
+    targetSlackChannel: String(input.targetSlackChannel ?? '').trim(),
     mentionTargets: Array.isArray(input.mentionTargets)
       ? input.mentionTargets.map((value) => String(value).trim()).filter(Boolean)
       : [],
     excludedSpeakerIds: Array.isArray(input.excludedSpeakerIds)
       ? input.excludedSpeakerIds.map((value) => String(value).trim()).filter(Boolean)
       : [],
+  };
+
+  const missingFields: string[] = [];
+  if (!payload.name) missingFields.push('規則名稱');
+  if (!payload.sourceGroupId) missingFields.push('來源 LINE 群組');
+  if (!payload.targetSlackChannel) missingFields.push('目標 Slack 頻道');
+
+  if (missingFields.length > 0) {
+    return { missingFields };
+  }
+
+  return { payload, missingFields: [] };
+}
+
+function parseDiscordMentionMappingInput(
+  input: Partial<DiscordMentionMapping>,
+): Omit<DiscordMentionMapping, 'id'> | null {
+  if (!input.discordUserId || !input.slackMention) {
+    return null;
+  }
+
+  return {
+    enabled: Boolean(input.enabled ?? true),
+    discordUserId: String(input.discordUserId).trim(),
+    slackMention: String(input.slackMention).trim(),
+    label: String(input.label ?? input.discordUserId).trim(),
+  };
+}
+
+function parseLineMentionMappingInput(
+  input: Partial<LineMentionMapping>,
+): Omit<LineMentionMapping, 'id'> | null {
+  if (!input.lineUserId || !input.slackMention) {
+    return null;
+  }
+
+  return {
+    enabled: Boolean(input.enabled ?? true),
+    lineUserId: String(input.lineUserId).trim(),
+    lineChannelId: String(input.lineChannelId ?? 'default').trim(),
+    slackMention: String(input.slackMention).trim(),
+    label: String(input.label ?? input.lineUserId).trim(),
   };
 }
 
@@ -232,6 +291,205 @@ router.get('/api/admin/settings', async (_req, res) => {
   res.json({ ok: true, settings });
 });
 
+router.get('/api/admin/mention-trigger', async (_req, res) => {
+  const settings = await getRelaySettings();
+  res.json({
+    ok: true,
+    discordMentionTrigger: settings.discordMentionTrigger,
+    lineMentionTrigger: settings.lineMentionTrigger,
+  });
+});
+
+router.put('/api/admin/mention-trigger/discord-scope', async (req, res) => {
+  const body = req.body as Partial<DiscordMentionTriggerConfig>;
+  const settings = await getRelaySettings();
+
+  const patch: Partial<DiscordMentionTriggerConfig> = {};
+  if (typeof body.enabled === 'boolean') {
+    patch.enabled = body.enabled;
+  }
+  if (Array.isArray(body.allowedGuildIds)) {
+    patch.allowedGuildIds = body.allowedGuildIds.map((value) => String(value).trim()).filter(Boolean);
+  }
+
+  const next = {
+    ...settings.discordMentionTrigger,
+    ...patch,
+  };
+
+  const updated = await updateRelaySettings({ discordMentionTrigger: next });
+  res.json({ ok: true, discordMentionTrigger: updated.discordMentionTrigger });
+});
+
+router.put('/api/admin/mention-trigger/line-scope', async (req, res) => {
+  const body = req.body as Partial<LineMentionTriggerConfig>;
+  const settings = await getRelaySettings();
+
+  const patch: Partial<LineMentionTriggerConfig> = {};
+  if (typeof body.enabled === 'boolean') {
+    patch.enabled = body.enabled;
+  }
+  if (Array.isArray(body.allowedGroupIds)) {
+    patch.allowedGroupIds = body.allowedGroupIds.map((value) => String(value).trim()).filter(Boolean);
+  }
+  if (Array.isArray(body.excludedGroupIds)) {
+    patch.excludedGroupIds = body.excludedGroupIds.map((value) => String(value).trim()).filter(Boolean);
+  }
+
+  const next = {
+    ...settings.lineMentionTrigger,
+    ...patch,
+  };
+
+  const updated = await updateRelaySettings({ lineMentionTrigger: next });
+  res.json({ ok: true, lineMentionTrigger: updated.lineMentionTrigger });
+});
+
+router.post('/api/admin/mention-trigger/discord-mappings', async (req, res) => {
+  const payload = parseDiscordMentionMappingInput(req.body as Partial<DiscordMentionMapping>);
+  if (!payload) {
+    res.status(400).json({ ok: false, message: 'Invalid Discord mention mapping payload.' });
+    return;
+  }
+
+  const settings = await getRelaySettings();
+  const nextMappings = settings.discordMentionTrigger.mappings.concat([{ id: crypto.randomUUID(), ...payload }]);
+  const updated = await updateRelaySettings({
+    discordMentionTrigger: {
+      ...settings.discordMentionTrigger,
+      mappings: nextMappings,
+    },
+  });
+
+  res.status(201).json({ ok: true, discordMentionTrigger: updated.discordMentionTrigger });
+});
+
+router.put('/api/admin/mention-trigger/discord-mappings/:id', async (req, res) => {
+  const id = req.params.id;
+  const body = req.body as Partial<DiscordMentionMapping>;
+  const settings = await getRelaySettings();
+  const idx = settings.discordMentionTrigger.mappings.findIndex((item) => item.id === id);
+  if (idx === -1) {
+    res.status(404).json({ ok: false, message: 'Discord mention mapping not found.' });
+    return;
+  }
+
+  const current = settings.discordMentionTrigger.mappings[idx];
+  const nextItem: DiscordMentionMapping = {
+    ...current,
+    ...(typeof body.enabled === 'boolean' ? { enabled: body.enabled } : {}),
+    ...(typeof body.discordUserId === 'string' ? { discordUserId: body.discordUserId.trim() } : {}),
+    ...(typeof body.slackMention === 'string' ? { slackMention: body.slackMention.trim() } : {}),
+    ...(typeof body.label === 'string' ? { label: body.label.trim() } : {}),
+  };
+
+  const nextMappings = [...settings.discordMentionTrigger.mappings];
+  nextMappings[idx] = nextItem;
+
+  const updated = await updateRelaySettings({
+    discordMentionTrigger: {
+      ...settings.discordMentionTrigger,
+      mappings: nextMappings,
+    },
+  });
+
+  res.json({ ok: true, discordMentionTrigger: updated.discordMentionTrigger });
+});
+
+router.delete('/api/admin/mention-trigger/discord-mappings/:id', async (req, res) => {
+  const id = req.params.id;
+  const settings = await getRelaySettings();
+  const before = settings.discordMentionTrigger.mappings.length;
+  const nextMappings = settings.discordMentionTrigger.mappings.filter((item) => item.id !== id);
+
+  if (before === nextMappings.length) {
+    res.status(404).json({ ok: false, message: 'Discord mention mapping not found.' });
+    return;
+  }
+
+  const updated = await updateRelaySettings({
+    discordMentionTrigger: {
+      ...settings.discordMentionTrigger,
+      mappings: nextMappings,
+    },
+  });
+
+  res.json({ ok: true, discordMentionTrigger: updated.discordMentionTrigger });
+});
+
+router.post('/api/admin/mention-trigger/line-mappings', async (req, res) => {
+  const payload = parseLineMentionMappingInput(req.body as Partial<LineMentionMapping>);
+  if (!payload) {
+    res.status(400).json({ ok: false, message: 'Invalid LINE mention mapping payload.' });
+    return;
+  }
+
+  const settings = await getRelaySettings();
+  const nextMappings = settings.lineMentionTrigger.mappings.concat([{ id: crypto.randomUUID(), ...payload }]);
+  const updated = await updateRelaySettings({
+    lineMentionTrigger: {
+      ...settings.lineMentionTrigger,
+      mappings: nextMappings,
+    },
+  });
+
+  res.status(201).json({ ok: true, lineMentionTrigger: updated.lineMentionTrigger });
+});
+
+router.put('/api/admin/mention-trigger/line-mappings/:id', async (req, res) => {
+  const id = req.params.id;
+  const body = req.body as Partial<LineMentionMapping>;
+  const settings = await getRelaySettings();
+  const idx = settings.lineMentionTrigger.mappings.findIndex((item) => item.id === id);
+  if (idx === -1) {
+    res.status(404).json({ ok: false, message: 'LINE mention mapping not found.' });
+    return;
+  }
+
+  const current = settings.lineMentionTrigger.mappings[idx];
+  const nextItem: LineMentionMapping = {
+    ...current,
+    ...(typeof body.enabled === 'boolean' ? { enabled: body.enabled } : {}),
+    ...(typeof body.lineUserId === 'string' ? { lineUserId: body.lineUserId.trim() } : {}),
+    ...(typeof body.lineChannelId === 'string' ? { lineChannelId: body.lineChannelId.trim() } : {}),
+    ...(typeof body.slackMention === 'string' ? { slackMention: body.slackMention.trim() } : {}),
+    ...(typeof body.label === 'string' ? { label: body.label.trim() } : {}),
+  };
+
+  const nextMappings = [...settings.lineMentionTrigger.mappings];
+  nextMappings[idx] = nextItem;
+
+  const updated = await updateRelaySettings({
+    lineMentionTrigger: {
+      ...settings.lineMentionTrigger,
+      mappings: nextMappings,
+    },
+  });
+
+  res.json({ ok: true, lineMentionTrigger: updated.lineMentionTrigger });
+});
+
+router.delete('/api/admin/mention-trigger/line-mappings/:id', async (req, res) => {
+  const id = req.params.id;
+  const settings = await getRelaySettings();
+  const before = settings.lineMentionTrigger.mappings.length;
+  const nextMappings = settings.lineMentionTrigger.mappings.filter((item) => item.id !== id);
+
+  if (before === nextMappings.length) {
+    res.status(404).json({ ok: false, message: 'LINE mention mapping not found.' });
+    return;
+  }
+
+  const updated = await updateRelaySettings({
+    lineMentionTrigger: {
+      ...settings.lineMentionTrigger,
+      mappings: nextMappings,
+    },
+  });
+
+  res.json({ ok: true, lineMentionTrigger: updated.lineMentionTrigger });
+});
+
 router.get('/api/admin/rules-export', async (_req, res) => {
   const data = await exportRelayRules();
   const date = new Date().toISOString().slice(0, 10);
@@ -281,13 +539,17 @@ router.put('/api/admin/settings', async (req, res) => {
 });
 
 router.post('/api/admin/discord-rules', async (req, res) => {
-  const payload = parseDiscordRuleInput(req.body as Partial<DiscordRelayRule>);
-  if (!payload) {
-    res.status(400).json({ ok: false, message: 'Invalid rule payload.' });
+  const parsed = parseDiscordRuleInput(req.body as Partial<DiscordRelayRule>);
+  if (!parsed.payload) {
+    res.status(400).json({
+      ok: false,
+      message: `缺少必要欄位：${parsed.missingFields.join('、')}`,
+      missingFields: parsed.missingFields,
+    });
     return;
   }
 
-  const created = await createDiscordRelayRule(payload);
+  const created = await createDiscordRelayRule(parsed.payload);
   res.status(201).json({ ok: true, rule: created });
 });
 
@@ -333,13 +595,17 @@ router.delete('/api/admin/discord-rules/:id', async (req, res) => {
 });
 
 router.post('/api/admin/line-rules', async (req, res) => {
-  const payload = parseLineRuleInput(req.body as Partial<LineRelayRule>);
-  if (!payload) {
-    res.status(400).json({ ok: false, message: 'Invalid LINE rule payload.' });
+  const parsed = parseLineRuleInput(req.body as Partial<LineRelayRule>);
+  if (!parsed.payload) {
+    res.status(400).json({
+      ok: false,
+      message: `缺少必要欄位：${parsed.missingFields.join('、')}`,
+      missingFields: parsed.missingFields,
+    });
     return;
   }
 
-  const created = await createLineRelayRule(payload);
+  const created = await createLineRelayRule(parsed.payload);
   res.status(201).json({ ok: true, rule: created });
 });
 
@@ -675,6 +941,22 @@ router.get('/admin', (_req, res) => {
         max-width: 320px;
       }
 
+      .mapping-grid {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: 10px;
+      }
+
+      .mapping-grid .full {
+        grid-column: 1 / -1;
+      }
+
+      .mini-actions {
+        display: flex;
+        gap: 6px;
+        flex-wrap: wrap;
+      }
+
       pre {
         margin: 0;
         white-space: pre-wrap;
@@ -688,6 +970,7 @@ router.get('/admin', (_req, res) => {
 
       @media (max-width: 900px) {
         .grid, .row { grid-template-columns: 1fr; }
+        .mapping-grid { grid-template-columns: 1fr; }
       }
     </style>
   </head>
@@ -732,6 +1015,7 @@ router.get('/admin', (_req, res) => {
         <div class="tabs" id="tabNav">
           <button class="tab-btn active" data-tab="discord">🎮 Discord 規則</button>
           <button class="tab-btn" data-tab="line">🟢 LINE 規則</button>
+          <button class="tab-btn" data-tab="mention">🔔 Mention Trigger</button>
           <button class="tab-btn" data-tab="diag">診斷</button>
         </div>
       </section>
@@ -770,9 +1054,9 @@ router.get('/admin', (_req, res) => {
                 <input id="guildId" placeholder="838735527204093962" />
               </div>
               <div>
-                <label>Discord Channel（可下拉）</label>
-                <select id="channelSelect"><option value="">請先選 Guild 或手動輸入</option></select>
-                <input id="channelId" placeholder="838741333845737503" />
+                <label>Discord Channel（可下拉；留空代表該 Guild 全部 Channel）</label>
+                <select id="channelSelect"><option value="">全部 Channel（Guild-wide）</option></select>
+                <input id="channelId" placeholder="留空=全部；或輸入 838741333845737503" />
               </div>
             </div>
 
@@ -865,6 +1149,125 @@ router.get('/admin', (_req, res) => {
 
       </section>
 
+      <section id="tab-mention" class="tab-panel">
+        <div class="card">
+          <h2>Discord Mention Trigger</h2>
+          <p class="hint">在允許的 Guild 中，只要訊息 mention 到已映射的 Discord User，就會觸發轉發。</p>
+
+          <label><input id="mentionDiscordEnabled" type="checkbox" /> 啟用 Discord Mention Trigger</label>
+          <label>Allowed Guild IDs（逗號分隔；留空代表不限）</label>
+          <input id="mentionDiscordAllowedGuildIds" placeholder="例如 838735527204093962, 123456789012345678" />
+          <div class="actions">
+            <button id="saveDiscordMentionScopeBtn" type="button">儲存 Discord 觸發範圍</button>
+          </div>
+
+          <div class="flow-block">
+            <div class="flow-title">Discord User → Slack Mention 映射</div>
+            <div class="mapping-grid">
+              <div>
+                <label>Discord User ID</label>
+                <input id="discordMentionUserId" placeholder="例如 123456789012345678" />
+              </div>
+              <div>
+                <label>顯示名稱（label）</label>
+                <input id="discordMentionLabel" placeholder="例如 Miki" />
+              </div>
+              <div>
+                <label>Slack Mention</label>
+                <input id="discordMentionSlackMention" placeholder="例如 <@U12345> 或 <!subteam^S1234>" />
+              </div>
+              <div>
+                <label>LINE Channel ID</label>
+                <input id="discordMentionChannelHint" value="(Discord 不使用)" disabled />
+              </div>
+              <div class="full">
+                <label><input id="discordMentionEnabled" type="checkbox" checked /> 映射啟用</label>
+              </div>
+            </div>
+            <label>從近期 Discord 作者帶入</label>
+            <select id="discordMentionRecentAuthorSelect" multiple size="6"></select>
+            <div class="actions">
+              <button id="addDiscordMentionFromRecentBtn" class="secondary" type="button">從近期作者帶入 User ID</button>
+              <button id="saveDiscordMentionMappingBtn" type="button">新增映射</button>
+              <button id="cancelDiscordMentionMappingBtn" class="secondary" type="button" style="display:none;">取消編輯</button>
+            </div>
+            <table>
+              <thead>
+                <tr>
+                  <th>Label</th>
+                  <th>Discord User</th>
+                  <th>Slack Mention</th>
+                  <th>啟用</th>
+                  <th>操作</th>
+                </tr>
+              </thead>
+              <tbody id="discordMentionMappingRows"></tbody>
+            </table>
+          </div>
+          <div id="discordMentionStatus" class="hint"></div>
+        </div>
+
+        <div class="card">
+          <h2>LINE Mention Trigger</h2>
+          <p class="hint">預設不限群組；可設定 allowed / excluded groups。mention 到已映射的 LINE User 即觸發。</p>
+
+          <label><input id="mentionLineEnabled" type="checkbox" /> 啟用 LINE Mention Trigger</label>
+          <label>Allowed Group IDs（逗號分隔；留空代表不限）</label>
+          <input id="mentionLineAllowedGroupIds" placeholder="例如 Cb8e39304a4f97d49b08a2186061cc69b" />
+          <label>Excluded Group IDs（逗號分隔）</label>
+          <input id="mentionLineExcludedGroupIds" placeholder="例如 Cxxxxxxxxxxxx" />
+          <div class="actions">
+            <button id="saveLineMentionScopeBtn" type="button">儲存 LINE 觸發範圍</button>
+          </div>
+
+          <div class="flow-block">
+            <div class="flow-title">LINE User → Slack Mention 映射</div>
+            <div class="mapping-grid">
+              <div>
+                <label>LINE User ID</label>
+                <input id="lineMentionUserId" placeholder="例如 Uxxxxxxxxxxxxxxxx" />
+              </div>
+              <div>
+                <label>顯示名稱（label）</label>
+                <input id="lineMentionLabel" placeholder="例如 Miki" />
+              </div>
+              <div>
+                <label>Slack Mention</label>
+                <input id="lineMentionSlackMention" placeholder="例如 <@U12345> 或 <!subteam^S1234>" />
+              </div>
+              <div>
+                <label>LINE Channel ID</label>
+                <input id="lineMentionChannelId" value="default" placeholder="預設 default" />
+              </div>
+              <div class="full">
+                <label><input id="lineMentionEnabled" type="checkbox" checked /> 映射啟用</label>
+              </div>
+            </div>
+            <label>從最近 LINE 發言者帶入</label>
+            <select id="lineMentionRecentSpeakerSelect" multiple size="6"></select>
+            <div class="actions">
+              <button id="addLineMentionFromRecentBtn" class="secondary" type="button">從最近發言者帶入 User ID</button>
+              <button id="saveLineMentionMappingBtn" type="button">新增映射</button>
+              <button id="cancelLineMentionMappingBtn" class="secondary" type="button" style="display:none;">取消編輯</button>
+            </div>
+            <table>
+              <thead>
+                <tr>
+                  <th>Label</th>
+                  <th>LINE User</th>
+                  <th>Channel</th>
+                  <th>Slack Mention</th>
+                  <th>啟用</th>
+                  <th>操作</th>
+                </tr>
+              </thead>
+              <tbody id="lineMentionMappingRows"></tbody>
+            </table>
+          </div>
+          <div id="lineMentionStatus" class="hint"></div>
+        </div>
+      </section>
+
       <section id="tab-diag" class="tab-panel">
         <div class="card">
           <h2>LINE Webhook 診斷</h2>
@@ -914,9 +1317,15 @@ router.get('/admin', (_req, res) => {
       };
 
       let relaySettings = { globalExcludedAuthorIds: [], globalExcludedLineSpeakerIds: [] };
+      let mentionTriggerSettings = {
+        discordMentionTrigger: { enabled: false, allowedGuildIds: [], mappings: [] },
+        lineMentionTrigger: { enabled: false, allowedGroupIds: [], excludedGroupIds: [], mappings: [] },
+      };
       let recentDiscordAuthors = [];
       let editingDiscordRuleId = null;
       let editingLineRuleId = null;
+      let editingDiscordMentionMappingId = null;
+      let editingLineMentionMappingId = null;
 
       function byId(id) {
         return document.getElementById(id);
@@ -1065,12 +1474,13 @@ router.get('/admin', (_req, res) => {
 
       function renderDiscordSourceCell(rule) {
         const guild = discordSources.find((item) => item.id === rule.sourceGuildId);
-        const channel = guild?.channels.find((item) => item.id === rule.sourceChannelId);
+        const sourceChannelId = String(rule.sourceChannelId || '').trim();
+        const channel = sourceChannelId ? guild?.channels.find((item) => item.id === sourceChannelId) : null;
         return '<div class="cell-stack">'
           + renderCellLine('Guild', guild ? guild.name : rule.sourceGuildId)
           + renderCellLine('Guild ID', rule.sourceGuildId)
-          + renderCellLine('Channel', channel ? '#' + channel.name : rule.sourceChannelId)
-          + renderCellLine('Channel ID', rule.sourceChannelId)
+          + renderCellLine('Channel', sourceChannelId ? (channel ? '#' + channel.name : sourceChannelId) : '全部 Channel')
+          + renderCellLine('Channel ID', sourceChannelId || 'ALL')
           + '</div>';
       }
 
@@ -1144,6 +1554,79 @@ router.get('/admin', (_req, res) => {
         const res = await fetch('/api/admin/settings');
         const json = await res.json();
         return json.settings || { globalExcludedAuthorIds: [], globalExcludedLineSpeakerIds: [] };
+      }
+
+      async function fetchMentionTriggerSettings() {
+        const res = await fetch('/api/admin/mention-trigger');
+        const json = await res.json();
+        return {
+          discordMentionTrigger: json.discordMentionTrigger || { enabled: false, allowedGuildIds: [], mappings: [] },
+          lineMentionTrigger: json.lineMentionTrigger || { enabled: false, allowedGroupIds: [], excludedGroupIds: [], mappings: [] },
+        };
+      }
+
+      async function saveDiscordMentionScope(patch) {
+        const res = await fetch('/api/admin/mention-trigger/discord-scope', {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(patch),
+        });
+        if (!res.ok) throw new Error('save discord mention scope failed');
+        const json = await res.json();
+        return json.discordMentionTrigger;
+      }
+
+      async function saveLineMentionScope(patch) {
+        const res = await fetch('/api/admin/mention-trigger/line-scope', {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(patch),
+        });
+        if (!res.ok) throw new Error('save line mention scope failed');
+        const json = await res.json();
+        return json.lineMentionTrigger;
+      }
+
+      async function saveDiscordMentionMapping(payload, id) {
+        const endpoint = id
+          ? '/api/admin/mention-trigger/discord-mappings/' + id
+          : '/api/admin/mention-trigger/discord-mappings';
+        const res = await fetch(endpoint, {
+          method: id ? 'PUT' : 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        });
+        if (!res.ok) throw new Error('save discord mention mapping failed');
+        const json = await res.json();
+        return json.discordMentionTrigger;
+      }
+
+      async function saveLineMentionMapping(payload, id) {
+        const endpoint = id
+          ? '/api/admin/mention-trigger/line-mappings/' + id
+          : '/api/admin/mention-trigger/line-mappings';
+        const res = await fetch(endpoint, {
+          method: id ? 'PUT' : 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        });
+        if (!res.ok) throw new Error('save line mention mapping failed');
+        const json = await res.json();
+        return json.lineMentionTrigger;
+      }
+
+      async function deleteDiscordMentionMapping(id) {
+        const res = await fetch('/api/admin/mention-trigger/discord-mappings/' + id, { method: 'DELETE' });
+        if (!res.ok) throw new Error('delete discord mention mapping failed');
+        const json = await res.json();
+        return json.discordMentionTrigger;
+      }
+
+      async function deleteLineMentionMapping(id) {
+        const res = await fetch('/api/admin/mention-trigger/line-mappings/' + id, { method: 'DELETE' });
+        if (!res.ok) throw new Error('delete line mention mapping failed');
+        const json = await res.json();
+        return json.lineMentionTrigger;
       }
 
       async function exportRulesFile() {
@@ -1369,6 +1852,37 @@ router.get('/admin', (_req, res) => {
         }
       }
 
+      function renderDiscordMentionRecentOptions() {
+        const select = asSelect('discordMentionRecentAuthorSelect');
+        if (!select) return;
+
+        select.innerHTML = '';
+        for (const author of recentDiscordAuthors) {
+          const option = document.createElement('option');
+          option.value = author.id;
+          option.textContent = author.displayName + ' (' + author.id + ')';
+          select.appendChild(option);
+        }
+      }
+
+      function renderLineMentionRecentOptions() {
+        const select = asSelect('lineMentionRecentSpeakerSelect');
+        if (!select) return;
+
+        select.innerHTML = '';
+        const seen = new Set();
+        for (const group of lineSources) {
+          for (const speaker of group.speakers || []) {
+            if (seen.has(speaker.id)) continue;
+            seen.add(speaker.id);
+            const option = document.createElement('option');
+            option.value = speaker.id;
+            option.textContent = speaker.displayName + ' (' + speaker.id + ')';
+            select.appendChild(option);
+          }
+        }
+      }
+
       function renderExcludedAuthorOptions() {
         const globalSelect = asSelect('globalExcludedAuthorSelect');
         if (globalSelect) {
@@ -1397,6 +1911,7 @@ router.get('/admin', (_req, res) => {
         const guildId = asInput('guildId')?.value.trim() || '';
         recentDiscordAuthors = await fetchDiscordAuthors(guildId || undefined);
         renderExcludedAuthorOptions();
+        renderDiscordMentionRecentOptions();
       }
 
       async function refreshDiscordSources() {
@@ -1455,6 +1970,127 @@ router.get('/admin', (_req, res) => {
           option.value = speaker.id;
           option.textContent = speaker.displayName + ' (' + speaker.id + ')';
           select.appendChild(option);
+        }
+      }
+
+      function setDiscordMentionMappingCreateMode() {
+        editingDiscordMentionMappingId = null;
+        const fields = ['discordMentionUserId', 'discordMentionLabel', 'discordMentionSlackMention'];
+        for (const id of fields) {
+          const input = asInput(id);
+          if (input) input.value = '';
+        }
+        const enabled = asInput('discordMentionEnabled');
+        if (enabled) enabled.checked = true;
+        const btn = byId('saveDiscordMentionMappingBtn');
+        if (btn instanceof HTMLButtonElement) btn.textContent = '新增映射';
+        const cancel = byId('cancelDiscordMentionMappingBtn');
+        if (cancel instanceof HTMLButtonElement) cancel.style.display = 'none';
+      }
+
+      function setLineMentionMappingCreateMode() {
+        editingLineMentionMappingId = null;
+        const fields = ['lineMentionUserId', 'lineMentionLabel', 'lineMentionSlackMention'];
+        for (const id of fields) {
+          const input = asInput(id);
+          if (input) input.value = '';
+        }
+        const channelId = asInput('lineMentionChannelId');
+        if (channelId) channelId.value = 'default';
+        const enabled = asInput('lineMentionEnabled');
+        if (enabled) enabled.checked = true;
+        const btn = byId('saveLineMentionMappingBtn');
+        if (btn instanceof HTMLButtonElement) btn.textContent = '新增映射';
+        const cancel = byId('cancelLineMentionMappingBtn');
+        if (cancel instanceof HTMLButtonElement) cancel.style.display = 'none';
+      }
+
+      function fillDiscordMentionMappingForm(item) {
+        const pairs = [
+          ['discordMentionUserId', item.discordUserId],
+          ['discordMentionLabel', item.label],
+          ['discordMentionSlackMention', item.slackMention],
+        ];
+        for (const [id, value] of pairs) {
+          const input = asInput(id);
+          if (input) input.value = value || '';
+        }
+        const enabled = asInput('discordMentionEnabled');
+        if (enabled) enabled.checked = Boolean(item.enabled);
+        editingDiscordMentionMappingId = item.id;
+        const btn = byId('saveDiscordMentionMappingBtn');
+        if (btn instanceof HTMLButtonElement) btn.textContent = '更新映射';
+        const cancel = byId('cancelDiscordMentionMappingBtn');
+        if (cancel instanceof HTMLButtonElement) cancel.style.display = 'inline-block';
+      }
+
+      function fillLineMentionMappingForm(item) {
+        const pairs = [
+          ['lineMentionUserId', item.lineUserId],
+          ['lineMentionLabel', item.label],
+          ['lineMentionSlackMention', item.slackMention],
+          ['lineMentionChannelId', item.lineChannelId || 'default'],
+        ];
+        for (const [id, value] of pairs) {
+          const input = asInput(id);
+          if (input) input.value = value || '';
+        }
+        const enabled = asInput('lineMentionEnabled');
+        if (enabled) enabled.checked = Boolean(item.enabled);
+        editingLineMentionMappingId = item.id;
+        const btn = byId('saveLineMentionMappingBtn');
+        if (btn instanceof HTMLButtonElement) btn.textContent = '更新映射';
+        const cancel = byId('cancelLineMentionMappingBtn');
+        if (cancel instanceof HTMLButtonElement) cancel.style.display = 'inline-block';
+      }
+
+      function renderMentionTriggerSettings() {
+        const discordScope = mentionTriggerSettings.discordMentionTrigger || { enabled: false, allowedGuildIds: [], mappings: [] };
+        const lineScope = mentionTriggerSettings.lineMentionTrigger || { enabled: false, allowedGroupIds: [], excludedGroupIds: [], mappings: [] };
+
+        const discordEnabled = asInput('mentionDiscordEnabled');
+        if (discordEnabled) discordEnabled.checked = Boolean(discordScope.enabled);
+        const discordGuilds = asInput('mentionDiscordAllowedGuildIds');
+        if (discordGuilds) discordGuilds.value = (discordScope.allowedGuildIds || []).join(', ');
+
+        const lineEnabled = asInput('mentionLineEnabled');
+        if (lineEnabled) lineEnabled.checked = Boolean(lineScope.enabled);
+        const lineAllowed = asInput('mentionLineAllowedGroupIds');
+        if (lineAllowed) lineAllowed.value = (lineScope.allowedGroupIds || []).join(', ');
+        const lineExcluded = asInput('mentionLineExcludedGroupIds');
+        if (lineExcluded) lineExcluded.value = (lineScope.excludedGroupIds || []).join(', ');
+
+        const discordRows = byId('discordMentionMappingRows');
+        if (discordRows instanceof HTMLElement) {
+          discordRows.innerHTML = '';
+          for (const mapping of discordScope.mappings || []) {
+            const tr = document.createElement('tr');
+            tr.innerHTML = [
+              '<td>' + escapeHtml(mapping.label || '-') + '</td>',
+              '<td>' + escapeHtml(mapping.discordUserId) + '</td>',
+              '<td>' + escapeHtml(mapping.slackMention) + '</td>',
+              '<td><input type="checkbox" data-action="toggle-discord-mention" data-id="' + mapping.id + '" ' + (mapping.enabled ? 'checked' : '') + ' /></td>',
+              '<td><div class="mini-actions"><button class="secondary" data-action="edit-discord-mention" data-id="' + mapping.id + '">編輯</button><button class="secondary" data-action="delete-discord-mention" data-id="' + mapping.id + '">刪除</button></div></td>',
+            ].join('');
+            discordRows.appendChild(tr);
+          }
+        }
+
+        const lineRows = byId('lineMentionMappingRows');
+        if (lineRows instanceof HTMLElement) {
+          lineRows.innerHTML = '';
+          for (const mapping of lineScope.mappings || []) {
+            const tr = document.createElement('tr');
+            tr.innerHTML = [
+              '<td>' + escapeHtml(mapping.label || '-') + '</td>',
+              '<td>' + escapeHtml(mapping.lineUserId) + '</td>',
+              '<td>' + escapeHtml(mapping.lineChannelId || 'default') + '</td>',
+              '<td>' + escapeHtml(mapping.slackMention) + '</td>',
+              '<td><input type="checkbox" data-action="toggle-line-mention" data-id="' + mapping.id + '" ' + (mapping.enabled ? 'checked' : '') + ' /></td>',
+              '<td><div class="mini-actions"><button class="secondary" data-action="edit-line-mention" data-id="' + mapping.id + '">編輯</button><button class="secondary" data-action="delete-line-mention" data-id="' + mapping.id + '">刪除</button></div></td>',
+            ].join('');
+            lineRows.appendChild(tr);
+          }
         }
       }
 
@@ -1833,6 +2469,7 @@ router.get('/admin', (_req, res) => {
           lineSources = await fetchLineSources();
           renderLineGroupOptions();
           renderGlobalLineSpeakerOptions();
+          renderLineMentionRecentOptions();
           const groupId = asInput('lineGroupId')?.value.trim() || asSelect('lineGroupSelect')?.value || '';
           renderLineSpeakerOptions(groupId);
           await refreshSharedRules();
@@ -1880,6 +2517,43 @@ router.get('/admin', (_req, res) => {
           }
         });
 
+        byId('saveDiscordMentionScopeBtn')?.addEventListener('click', async () => {
+          const enabled = Boolean(asInput('mentionDiscordEnabled')?.checked);
+          const allowedGuildIds = splitCSV(asInput('mentionDiscordAllowedGuildIds')?.value || '');
+          const status = byId('discordMentionStatus');
+          try {
+            const updated = await saveDiscordMentionScope({ enabled, allowedGuildIds });
+            mentionTriggerSettings.discordMentionTrigger = updated;
+            renderMentionTriggerSettings();
+            if (status instanceof HTMLElement) {
+              status.textContent = 'Discord Mention Trigger 範圍已儲存。';
+            }
+          } catch {
+            if (status instanceof HTMLElement) {
+              status.textContent = '儲存 Discord Mention Trigger 範圍失敗。';
+            }
+          }
+        });
+
+        byId('saveLineMentionScopeBtn')?.addEventListener('click', async () => {
+          const enabled = Boolean(asInput('mentionLineEnabled')?.checked);
+          const allowedGroupIds = splitCSV(asInput('mentionLineAllowedGroupIds')?.value || '');
+          const excludedGroupIds = splitCSV(asInput('mentionLineExcludedGroupIds')?.value || '');
+          const status = byId('lineMentionStatus');
+          try {
+            const updated = await saveLineMentionScope({ enabled, allowedGroupIds, excludedGroupIds });
+            mentionTriggerSettings.lineMentionTrigger = updated;
+            renderMentionTriggerSettings();
+            if (status instanceof HTMLElement) {
+              status.textContent = 'LINE Mention Trigger 範圍已儲存。';
+            }
+          } catch {
+            if (status instanceof HTMLElement) {
+              status.textContent = '儲存 LINE Mention Trigger 範圍失敗。';
+            }
+          }
+        });
+
         byId('addGlobalExcludedAuthorBtn')?.addEventListener('click', () => {
           const select = asSelect('globalExcludedAuthorSelect');
           const input = asInput('globalExcludedAuthorIds');
@@ -1902,6 +2576,75 @@ router.get('/admin', (_req, res) => {
           if (!select || !input) return;
           const ids = Array.from(select.selectedOptions).map((option) => option.value.trim()).filter(Boolean);
           mergeIdsToInput(input, ids);
+        });
+
+        byId('addDiscordMentionFromRecentBtn')?.addEventListener('click', () => {
+          const select = asSelect('discordMentionRecentAuthorSelect');
+          const input = asInput('discordMentionUserId');
+          if (!select || !input) return;
+          const ids = Array.from(select.selectedOptions).map((option) => option.value.trim()).filter(Boolean);
+          if (ids.length > 0) {
+            input.value = ids[0];
+          }
+        });
+
+        byId('addLineMentionFromRecentBtn')?.addEventListener('click', () => {
+          const select = asSelect('lineMentionRecentSpeakerSelect');
+          const input = asInput('lineMentionUserId');
+          if (!select || !input) return;
+          const ids = Array.from(select.selectedOptions).map((option) => option.value.trim()).filter(Boolean);
+          if (ids.length > 0) {
+            input.value = ids[0];
+          }
+        });
+
+        byId('saveDiscordMentionMappingBtn')?.addEventListener('click', async () => {
+          const status = byId('discordMentionStatus');
+          const payload = {
+            discordUserId: asInput('discordMentionUserId')?.value || '',
+            label: asInput('discordMentionLabel')?.value || '',
+            slackMention: asInput('discordMentionSlackMention')?.value || '',
+            enabled: Boolean(asInput('discordMentionEnabled')?.checked),
+          };
+
+          try {
+            const updated = await saveDiscordMentionMapping(payload, editingDiscordMentionMappingId || undefined);
+            mentionTriggerSettings.discordMentionTrigger = updated;
+            renderMentionTriggerSettings();
+            setDiscordMentionMappingCreateMode();
+            if (status instanceof HTMLElement) {
+              status.textContent = 'Discord Mention 映射已儲存。';
+            }
+          } catch {
+            if (status instanceof HTMLElement) {
+              status.textContent = '儲存 Discord Mention 映射失敗，請檢查欄位。';
+            }
+          }
+        });
+
+        byId('saveLineMentionMappingBtn')?.addEventListener('click', async () => {
+          const status = byId('lineMentionStatus');
+          const payload = {
+            lineUserId: asInput('lineMentionUserId')?.value || '',
+            lineChannelId: asInput('lineMentionChannelId')?.value || 'default',
+            label: asInput('lineMentionLabel')?.value || '',
+            slackMention: asInput('lineMentionSlackMention')?.value || '',
+            enabled: Boolean(asInput('lineMentionEnabled')?.checked),
+          };
+
+          try {
+            const updated = await saveLineMentionMapping(payload, editingLineMentionMappingId || undefined);
+            mentionTriggerSettings.lineMentionTrigger = updated;
+            renderMentionTriggerSettings();
+            setLineMentionMappingCreateMode();
+            if (status instanceof HTMLElement) {
+              status.textContent = 'LINE Mention 映射已儲存。';
+            }
+          } catch {
+            if (status instanceof HTMLElement) {
+              status.textContent = '儲存 LINE Mention 映射失敗，請檢查欄位。';
+            }
+          }
         });
 
         byId('addLineSpeakerBtn')?.addEventListener('click', () => {
@@ -1962,6 +2705,14 @@ router.get('/admin', (_req, res) => {
           setLineCreateMode();
         });
 
+        byId('cancelDiscordMentionMappingBtn')?.addEventListener('click', () => {
+          setDiscordMentionMappingCreateMode();
+        });
+
+        byId('cancelLineMentionMappingBtn')?.addEventListener('click', () => {
+          setLineMentionMappingCreateMode();
+        });
+
         byId('saveDiscordRuleBtn')?.addEventListener('click', async () => {
           const payload = {
             name: asInput('discordName')?.value || '',
@@ -1985,7 +2736,16 @@ router.get('/admin', (_req, res) => {
           });
 
           if (!res.ok) {
-            alert('儲存 Discord 規則失敗，請檢查欄位。');
+            let message = '儲存 Discord 規則失敗，請檢查欄位。';
+            try {
+              const json = await res.json();
+              if (json && typeof json.message === 'string' && json.message.trim()) {
+                message = '儲存 Discord 規則失敗：' + json.message;
+              }
+            } catch {
+              // ignore invalid response body
+            }
+            alert(message);
             return;
           }
 
@@ -2015,7 +2775,16 @@ router.get('/admin', (_req, res) => {
           });
 
           if (!res.ok) {
-            alert('儲存 LINE 規則失敗，請檢查欄位。');
+            let message = '儲存 LINE 規則失敗，請檢查欄位。';
+            try {
+              const json = await res.json();
+              if (json && typeof json.message === 'string' && json.message.trim()) {
+                message = '儲存 LINE 規則失敗：' + json.message;
+              }
+            } catch {
+              // ignore invalid response body
+            }
+            alert(message);
             return;
           }
 
@@ -2086,23 +2855,111 @@ router.get('/admin', (_req, res) => {
             await refreshSharedRules();
           }
         });
+
+        byId('discordMentionMappingRows')?.addEventListener('click', async (event) => {
+          const btn = event.target;
+          if (!(btn instanceof HTMLElement)) return;
+          const action = btn.dataset.action;
+          const id = btn.dataset.id;
+          if (!action || !id) return;
+
+          const mappings = mentionTriggerSettings.discordMentionTrigger?.mappings || [];
+          const target = mappings.find((item) => item.id === id);
+          if (!target) return;
+
+          if (action === 'edit-discord-mention') {
+            fillDiscordMentionMappingForm(target);
+            return;
+          }
+
+          if (action === 'delete-discord-mention') {
+            const updated = await deleteDiscordMentionMapping(id);
+            mentionTriggerSettings.discordMentionTrigger = updated;
+            renderMentionTriggerSettings();
+            setDiscordMentionMappingCreateMode();
+          }
+        });
+
+        byId('discordMentionMappingRows')?.addEventListener('change', async (event) => {
+          const input = event.target;
+          if (!(input instanceof HTMLInputElement)) return;
+          const action = input.dataset.action;
+          const id = input.dataset.id;
+          if (action !== 'toggle-discord-mention' || !id) return;
+
+          const mappings = mentionTriggerSettings.discordMentionTrigger?.mappings || [];
+          const target = mappings.find((item) => item.id === id);
+          if (!target) return;
+
+          const updated = await saveDiscordMentionMapping({ enabled: input.checked }, id);
+          mentionTriggerSettings.discordMentionTrigger = updated;
+          renderMentionTriggerSettings();
+        });
+
+        byId('lineMentionMappingRows')?.addEventListener('click', async (event) => {
+          const btn = event.target;
+          if (!(btn instanceof HTMLElement)) return;
+          const action = btn.dataset.action;
+          const id = btn.dataset.id;
+          if (!action || !id) return;
+
+          const mappings = mentionTriggerSettings.lineMentionTrigger?.mappings || [];
+          const target = mappings.find((item) => item.id === id);
+          if (!target) return;
+
+          if (action === 'edit-line-mention') {
+            fillLineMentionMappingForm(target);
+            return;
+          }
+
+          if (action === 'delete-line-mention') {
+            const updated = await deleteLineMentionMapping(id);
+            mentionTriggerSettings.lineMentionTrigger = updated;
+            renderMentionTriggerSettings();
+            setLineMentionMappingCreateMode();
+          }
+        });
+
+        byId('lineMentionMappingRows')?.addEventListener('change', async (event) => {
+          const input = event.target;
+          if (!(input instanceof HTMLInputElement)) return;
+          const action = input.dataset.action;
+          const id = input.dataset.id;
+          if (action !== 'toggle-line-mention' || !id) return;
+
+          const mappings = mentionTriggerSettings.lineMentionTrigger?.mappings || [];
+          const target = mappings.find((item) => item.id === id);
+          if (!target) return;
+
+          const updated = await saveLineMentionMapping({ enabled: input.checked }, id);
+          mentionTriggerSettings.lineMentionTrigger = updated;
+          renderMentionTriggerSettings();
+        });
       }
 
       (async () => {
         wireTabs();
         wireEvents();
 
-        const [discordSourceResult, loadedLineSources, loadedSlackOptions, loadedRelaySettings] = await Promise.all([
+        const [
+          discordSourceResult,
+          loadedLineSources,
+          loadedSlackOptions,
+          loadedRelaySettings,
+          loadedMentionTriggerSettings,
+        ] = await Promise.all([
           fetchDiscordSources(),
           fetchLineSources(),
           fetchSlackOptions(),
           fetchSettings(),
+          fetchMentionTriggerSettings(),
         ]);
 
         discordSources = discordSourceResult.guilds;
         lineSources = loadedLineSources;
         slackOptions = loadedSlackOptions;
         relaySettings = loadedRelaySettings;
+        mentionTriggerSettings = loadedMentionTriggerSettings;
 
         await refreshExcludedAuthorOptions();
 
@@ -2110,6 +2967,7 @@ router.get('/admin', (_req, res) => {
         renderChannelOptions('');
         renderLineGroupOptions();
         renderGlobalLineSpeakerOptions();
+        renderLineMentionRecentOptions();
 
         renderSlackSummary();
         renderSlackChannelOptions('discordSlackChannelSelect');
@@ -2119,9 +2977,12 @@ router.get('/admin', (_req, res) => {
         renderMentionOptions('lineMentionTargets');
 
         renderGlobalSettings();
+        renderMentionTriggerSettings();
 
         setDiscordCreateMode();
         setLineCreateMode();
+        setDiscordMentionMappingCreateMode();
+        setLineMentionMappingCreateMode();
 
         await Promise.all([
           refreshSharedRules(),
