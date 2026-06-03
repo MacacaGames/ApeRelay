@@ -3,14 +3,67 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import type { DiscordRelayRule, LineRelayRule } from '../types.js';
 
+export type RelayRuleImportMode = 'replace' | 'merge';
+
+export type RelayRuleExportData = {
+  version: 1;
+  exportedAt: string;
+  discordRules: DiscordRelayRule[];
+  lineRules: LineRelayRule[];
+  globalExcludedAuthorIds: string[];
+  globalExcludedLineSpeakerIds: string[];
+};
+
 type RelayRuleStoreData = {
   discordRules: DiscordRelayRule[];
   lineRules: LineRelayRule[];
   globalExcludedAuthorIds: string[];
+  globalExcludedLineSpeakerIds: string[];
 };
 
 const DATA_DIR = path.join(process.cwd(), 'data');
 const DATA_FILE = path.join(DATA_DIR, 'relay-rules.json');
+
+function normalizeStringArray(value: unknown): string[] {
+  return Array.isArray(value)
+    ? value.map((item) => String(item).trim()).filter(Boolean)
+    : [];
+}
+
+function normalizeDiscordRuleForImport(value: unknown, preserveId: boolean): DiscordRelayRule | null {
+  const raw = value as Partial<DiscordRelayRule> | null;
+  if (!raw || !raw.name || !raw.sourceGuildId || !raw.sourceChannelId || !raw.targetSlackChannel) {
+    return null;
+  }
+
+  return {
+    id: preserveId && raw.id ? String(raw.id) : crypto.randomUUID(),
+    name: String(raw.name).trim(),
+    enabled: Boolean(raw.enabled ?? true),
+    sourceGuildId: String(raw.sourceGuildId).trim(),
+    sourceChannelId: String(raw.sourceChannelId).trim(),
+    targetSlackChannel: String(raw.targetSlackChannel).trim(),
+    mentionTargets: normalizeStringArray(raw.mentionTargets),
+    excludedAuthorIds: normalizeStringArray(raw.excludedAuthorIds),
+  };
+}
+
+function normalizeLineRuleForImport(value: unknown, preserveId: boolean): LineRelayRule | null {
+  const raw = value as Partial<LineRelayRule> | null;
+  if (!raw || !raw.name || !raw.sourceGroupId || !raw.targetSlackChannel) {
+    return null;
+  }
+
+  return {
+    id: preserveId && raw.id ? String(raw.id) : crypto.randomUUID(),
+    name: String(raw.name).trim(),
+    enabled: Boolean(raw.enabled ?? true),
+    sourceGroupId: String(raw.sourceGroupId).trim(),
+    targetSlackChannel: String(raw.targetSlackChannel).trim(),
+    mentionTargets: normalizeStringArray(raw.mentionTargets),
+    excludedSpeakerIds: normalizeStringArray(raw.excludedSpeakerIds),
+  };
+}
 
 async function ensureStoreFile(): Promise<void> {
   await fs.mkdir(DATA_DIR, { recursive: true });
@@ -22,6 +75,7 @@ async function ensureStoreFile(): Promise<void> {
       discordRules: [],
       lineRules: [],
       globalExcludedAuthorIds: [],
+      globalExcludedLineSpeakerIds: [],
     };
     await fs.writeFile(DATA_FILE, JSON.stringify(initialData, null, 2), 'utf8');
   }
@@ -61,6 +115,10 @@ async function readStore(): Promise<RelayRuleStoreData> {
     ? parsed.globalExcludedAuthorIds.map((value) => String(value).trim()).filter(Boolean)
     : [];
 
+  const globalExcludedLineSpeakerIds = Array.isArray(parsed.globalExcludedLineSpeakerIds)
+    ? parsed.globalExcludedLineSpeakerIds.map((value) => String(value).trim()).filter(Boolean)
+    : [];
+
   const lineRules: LineRelayRule[] = rawLineRules.map((item) => {
     const raw = item as LineRelayRule & { defaultMentions?: string };
     const mentionTargets = Array.isArray(raw.mentionTargets)
@@ -76,13 +134,13 @@ async function readStore(): Promise<RelayRuleStoreData> {
       sourceGroupId: String(raw.sourceGroupId),
       targetSlackChannel: String(raw.targetSlackChannel),
       mentionTargets,
-      allowedSpeakerIds: Array.isArray(raw.allowedSpeakerIds)
-        ? raw.allowedSpeakerIds.map((value) => String(value).trim()).filter(Boolean)
+      excludedSpeakerIds: Array.isArray(raw.excludedSpeakerIds)
+        ? raw.excludedSpeakerIds.map((value) => String(value).trim()).filter(Boolean)
         : [],
     };
   });
 
-  return { discordRules, lineRules, globalExcludedAuthorIds };
+  return { discordRules, lineRules, globalExcludedAuthorIds, globalExcludedLineSpeakerIds };
 }
 
 async function writeStore(data: RelayRuleStoreData): Promise<void> {
@@ -95,10 +153,14 @@ export async function getDiscordRelayRules(): Promise<DiscordRelayRule[]> {
   return store.discordRules;
 }
 
-export async function getRelaySettings(): Promise<{ globalExcludedAuthorIds: string[] }> {
+export async function getRelaySettings(): Promise<{
+  globalExcludedAuthorIds: string[];
+  globalExcludedLineSpeakerIds: string[];
+}> {
   const store = await readStore();
   return {
     globalExcludedAuthorIds: store.globalExcludedAuthorIds,
+    globalExcludedLineSpeakerIds: store.globalExcludedLineSpeakerIds,
   };
 }
 
@@ -109,7 +171,11 @@ export async function getLineRelayRules(): Promise<LineRelayRule[]> {
 
 export async function updateRelaySettings(patch: {
   globalExcludedAuthorIds?: string[];
-}): Promise<{ globalExcludedAuthorIds: string[] }> {
+  globalExcludedLineSpeakerIds?: string[];
+}): Promise<{
+  globalExcludedAuthorIds: string[];
+  globalExcludedLineSpeakerIds: string[];
+}> {
   const store = await readStore();
 
   if (Array.isArray(patch.globalExcludedAuthorIds)) {
@@ -118,10 +184,80 @@ export async function updateRelaySettings(patch: {
       .filter(Boolean);
   }
 
+  if (Array.isArray(patch.globalExcludedLineSpeakerIds)) {
+    store.globalExcludedLineSpeakerIds = patch.globalExcludedLineSpeakerIds
+      .map((value) => String(value).trim())
+      .filter(Boolean);
+  }
+
   await writeStore(store);
 
   return {
     globalExcludedAuthorIds: store.globalExcludedAuthorIds,
+    globalExcludedLineSpeakerIds: store.globalExcludedLineSpeakerIds,
+  };
+}
+
+export async function exportRelayRules(): Promise<RelayRuleExportData> {
+  const store = await readStore();
+  return {
+    version: 1,
+    exportedAt: new Date().toISOString(),
+    discordRules: store.discordRules,
+    lineRules: store.lineRules,
+    globalExcludedAuthorIds: store.globalExcludedAuthorIds,
+    globalExcludedLineSpeakerIds: store.globalExcludedLineSpeakerIds,
+  };
+}
+
+export async function importRelayRules(
+  payload: unknown,
+  mode: RelayRuleImportMode,
+): Promise<{
+  discordRules: number;
+  lineRules: number;
+  globalExcludedAuthorIds: number;
+  globalExcludedLineSpeakerIds: number;
+}> {
+  const raw = payload as Partial<RelayRuleStoreData> | null;
+  if (!raw || !Array.isArray(raw.discordRules) || !Array.isArray(raw.lineRules)) {
+    throw new Error('Invalid relay rule import payload.');
+  }
+
+  const preserveId = mode === 'replace';
+  const discordRules = raw.discordRules.map((rule) => normalizeDiscordRuleForImport(rule, preserveId));
+  const lineRules = raw.lineRules.map((rule) => normalizeLineRuleForImport(rule, preserveId));
+
+  if (discordRules.some((rule) => rule === null) || lineRules.some((rule) => rule === null)) {
+    throw new Error('Import file contains invalid relay rules.');
+  }
+
+  const globalExcludedAuthorIds = normalizeStringArray(raw.globalExcludedAuthorIds);
+  const globalExcludedLineSpeakerIds = normalizeStringArray(raw.globalExcludedLineSpeakerIds);
+  const store = mode === 'merge'
+    ? await readStore()
+    : { discordRules: [], lineRules: [], globalExcludedAuthorIds: [], globalExcludedLineSpeakerIds: [] };
+
+  store.discordRules = store.discordRules.concat(discordRules as DiscordRelayRule[]);
+  store.lineRules = store.lineRules.concat(lineRules as LineRelayRule[]);
+  store.globalExcludedAuthorIds = Array.from(new Set(
+    mode === 'merge'
+      ? store.globalExcludedAuthorIds.concat(globalExcludedAuthorIds)
+      : globalExcludedAuthorIds,
+  ));
+  store.globalExcludedLineSpeakerIds = Array.from(new Set(
+    mode === 'merge'
+      ? store.globalExcludedLineSpeakerIds.concat(globalExcludedLineSpeakerIds)
+      : globalExcludedLineSpeakerIds,
+  ));
+
+  await writeStore(store);
+
+  return {
+    discordRules: discordRules.length,
+    lineRules: lineRules.length,
+    globalExcludedAuthorIds: globalExcludedAuthorIds.length,
+    globalExcludedLineSpeakerIds: globalExcludedLineSpeakerIds.length,
   };
 }
 
@@ -138,10 +274,12 @@ export async function getDiscordRelayRuntimeConfig(): Promise<{
 
 export async function getLineRelayRuntimeConfig(): Promise<{
   rules: LineRelayRule[];
+  globalExcludedLineSpeakerIds: string[];
 }> {
   const store = await readStore();
   return {
     rules: store.lineRules,
+    globalExcludedLineSpeakerIds: store.globalExcludedLineSpeakerIds,
   };
 }
 

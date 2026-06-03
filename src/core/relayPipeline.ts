@@ -93,17 +93,24 @@ function findMatchingLineRule(rules: LineRelayRule[], groupId: string): LineRela
   return null;
 }
 
-function shouldFilterLineSpeaker(rule: LineRelayRule, speakerId: string | undefined): boolean {
+function shouldExcludeLineSpeaker(
+  rule: LineRelayRule,
+  globalExcludedLineSpeakerIds: string[],
+  speakerId: string | undefined,
+): boolean {
   if (!speakerId) {
     return false;
   }
 
-  const allowed = (rule.allowedSpeakerIds ?? []).filter(Boolean);
-  if (allowed.length === 0) {
-    return false;
+  const excluded = new Set<string>();
+  for (const id of globalExcludedLineSpeakerIds) {
+    excluded.add(id);
+  }
+  for (const id of rule.excludedSpeakerIds ?? []) {
+    excluded.add(id);
   }
 
-  return !allowed.includes(speakerId);
+  return excluded.has(speakerId);
 }
 
 function isDiscordAllowlisted(guildId: string | undefined, channelCandidateIds: string[]): AllowCheck {
@@ -144,16 +151,16 @@ export async function relayIncomingMessage(input: RelayInput): Promise<RelayResu
       return { forwarded: false, reason: 'line-no-matching-rule' };
     }
 
-    if (shouldFilterLineSpeaker(matchedRule, lineCtx.speakerId)) {
+    if (shouldExcludeLineSpeaker(matchedRule, runtimeConfig.globalExcludedLineSpeakerIds, lineCtx.speakerId)) {
       logger.info(
         {
           sourceGroupId: lineCtx.groupId,
           speakerId: lineCtx.speakerId,
           ruleId: matchedRule.id,
         },
-        'Skip LINE message due to speaker filter',
+        'Skip LINE message due to excluded speaker',
       );
-      return { forwarded: false, reason: 'line-speaker-filtered' };
+      return { forwarded: false, reason: 'line-speaker-excluded' };
     }
 
     await sendToSlack(input.message, matchedRule.targetSlackChannel, matchedRule.mentionTargets);

@@ -29,7 +29,7 @@ export interface LineRelayRule {
   sourceGroupId: string;
   targetSlackChannel: string;
   mentionTargets?: string[];
-  allowedSpeakerIds?: string[];
+  excludedSpeakerIds?: string[];
 }
 
 export interface DiscordSourceChannelOption {

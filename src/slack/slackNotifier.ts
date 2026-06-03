@@ -15,20 +15,26 @@ function formatTimestamp(date: Date): string {
   });
 }
 
-function buildSlackText(msg: UnifiedMessage): string {
+function formatPlatformLabel(platform: UnifiedMessage['platform']): string {
+  if (platform === 'LINE') return '🟢 LINE';
+  if (platform === 'Discord') return '🎮 Discord';
+  return '🔗 Webhook';
+}
+
+function buildSlackText(msg: UnifiedMessage, mentionText: string): string {
   const sourceLabel =
     msg.platform === 'LINE'
       ? msg.sourceType === 'group'
         ? '群組'
         : '一對一'
       : msg.platform === 'Discord'
-        ? 'Channel'
+        ? '頻道'
         : 'Webhook';
 
   const lines: string[] = [
     '【外部訊息通知】',
     '',
-    `平台：${msg.platform}`,
+    `平台：${formatPlatformLabel(msg.platform)}`,
     `來源：${sourceLabel}`,
   ];
 
@@ -45,6 +51,7 @@ function buildSlackText(msg: UnifiedMessage): string {
   lines.push(
     `發訊者：${msg.senderName}`,
     `時間：${formatTimestamp(msg.timestamp)}`,
+    `通知對象：${mentionText || '無'}`,
   );
 
   if (msg.sourceUrl) {
@@ -78,11 +85,11 @@ function buildSlackBlocks(msg: UnifiedMessage, mentionText: string) {
         ? '群組'
         : '一對一'
       : msg.platform === 'Discord'
-        ? 'Channel'
+        ? '頻道'
         : 'Webhook';
 
   const fields = [
-    mrkdwnField('平台', msg.platform),
+    mrkdwnField('平台', formatPlatformLabel(msg.platform)),
     mrkdwnField('來源', sourceLabel),
   ];
 
@@ -103,28 +110,28 @@ function buildSlackBlocks(msg: UnifiedMessage, mentionText: string) {
 
   const blocks: Array<Record<string, unknown>> = [];
 
-  if (mentionText) {
-    blocks.push({
-      type: 'section',
-      text: {
-        type: 'mrkdwn',
-        text: `${mentionText}\n*需要處理的新外部訊息*`,
-      },
-    });
-  }
-
   blocks.push(
     {
       type: 'header',
       text: {
         type: 'plain_text',
-        text: '【外部訊息通知】',
+        text: '需要處理的新外部訊息',
         emoji: false,
       },
     },
     {
       type: 'section',
       fields,
+    },
+    {
+      type: 'divider',
+    },
+    {
+      type: 'section',
+      text: {
+        type: 'mrkdwn',
+        text: `*通知對象*\n${mentionText || '無'}`,
+      },
     },
     {
       type: 'divider',
@@ -207,8 +214,7 @@ export async function sendToSlack(
     .map((value) => normalizeMentionTarget(value))
     .filter(Boolean);
   const mentionText = Array.from(new Set(normalizedMentionTargets)).join(' ');
-  const messageText = buildSlackText(msg);
-  const fallbackText = mentionText ? `${mentionText}\n\n${messageText}` : messageText;
+  const fallbackText = buildSlackText(msg, mentionText);
   const targetChannel = channel ?? config.slack.defaultChannel;
 
   const response = await fetch(SLACK_API_URL, {

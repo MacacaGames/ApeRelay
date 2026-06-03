@@ -5,12 +5,15 @@ import {
   createLineRelayRule,
   deleteDiscordRelayRule,
   deleteLineRelayRule,
+  exportRelayRules,
   getDiscordRelayRules,
   getLineRelayRules,
   getRelaySettings,
+  importRelayRules,
   updateDiscordRelayRule,
   updateLineRelayRule,
   updateRelaySettings,
+  type RelayRuleImportMode,
 } from '../admin/relayRuleStore.js';
 import { getDiscordRecentAuthorOptions, getDiscordSourceOptions } from '../discord/discordClient.js';
 import { config } from '../config.js';
@@ -175,8 +178,8 @@ function parseLineRuleInput(input: Partial<LineRelayRule>): Omit<LineRelayRule, 
     mentionTargets: Array.isArray(input.mentionTargets)
       ? input.mentionTargets.map((value) => String(value).trim()).filter(Boolean)
       : [],
-    allowedSpeakerIds: Array.isArray(input.allowedSpeakerIds)
-      ? input.allowedSpeakerIds.map((value) => String(value).trim()).filter(Boolean)
+    excludedSpeakerIds: Array.isArray(input.excludedSpeakerIds)
+      ? input.excludedSpeakerIds.map((value) => String(value).trim()).filter(Boolean)
       : [],
   };
 }
@@ -229,14 +232,51 @@ router.get('/api/admin/settings', async (_req, res) => {
   res.json({ ok: true, settings });
 });
 
+router.get('/api/admin/rules-export', async (_req, res) => {
+  const data = await exportRelayRules();
+  const date = new Date().toISOString().slice(0, 10);
+  res.setHeader('Content-Disposition', `attachment; filename="ape-relay-rules-${date}.json"`);
+  res.json(data);
+});
+
+router.post('/api/admin/rules-import', async (req, res) => {
+  const body = req.body as { mode?: string; data?: unknown };
+  const mode: RelayRuleImportMode = body.mode === 'replace' ? 'replace' : 'merge';
+  const payload = body.data ?? body;
+
+  try {
+    const summary = await importRelayRules(payload, mode);
+    res.json({ ok: true, mode, summary });
+  } catch (err) {
+    logger.warn({ err }, 'Unable to import relay rules');
+    res.status(400).json({ ok: false, message: 'Invalid relay rule import file.' });
+  }
+});
+
 router.put('/api/admin/settings', async (req, res) => {
-  const body = req.body as { globalExcludedAuthorIds?: unknown };
+  const body = req.body as {
+    globalExcludedAuthorIds?: unknown;
+    globalExcludedLineSpeakerIds?: unknown;
+  };
 
-  const globalExcludedAuthorIds = Array.isArray(body.globalExcludedAuthorIds)
-    ? body.globalExcludedAuthorIds.map((value) => String(value).trim()).filter(Boolean)
-    : [];
+  const patch: {
+    globalExcludedAuthorIds?: string[];
+    globalExcludedLineSpeakerIds?: string[];
+  } = {};
 
-  const settings = await updateRelaySettings({ globalExcludedAuthorIds });
+  if (Array.isArray(body.globalExcludedAuthorIds)) {
+    patch.globalExcludedAuthorIds = body.globalExcludedAuthorIds
+      .map((value) => String(value).trim())
+      .filter(Boolean);
+  }
+
+  if (Array.isArray(body.globalExcludedLineSpeakerIds)) {
+    patch.globalExcludedLineSpeakerIds = body.globalExcludedLineSpeakerIds
+      .map((value) => String(value).trim())
+      .filter(Boolean);
+  }
+
+  const settings = await updateRelaySettings(patch);
   res.json({ ok: true, settings });
 });
 
@@ -317,8 +357,8 @@ router.put('/api/admin/line-rules/:id', async (req, res) => {
       .map((value) => String(value).trim())
       .filter(Boolean);
   }
-  if (Array.isArray(body.allowedSpeakerIds)) {
-    patch.allowedSpeakerIds = body.allowedSpeakerIds
+  if (Array.isArray(body.excludedSpeakerIds)) {
+    patch.excludedSpeakerIds = body.excludedSpeakerIds
       .map((value) => String(value).trim())
       .filter(Boolean);
   }
@@ -595,6 +635,46 @@ router.get('/admin', (_req, res) => {
         gap: 6px;
       }
 
+      .platform-badge {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        min-width: 34px;
+        min-height: 34px;
+        border-radius: 999px;
+        border: 1px solid #cbd5e1;
+        background: #f8fafc;
+        font-size: 20px;
+      }
+
+      .platform-badge.line {
+        background: #ecfdf5;
+        border-color: #86efac;
+      }
+
+      .platform-badge.discord {
+        background: #eef2ff;
+        border-color: #c7d2fe;
+      }
+
+      .rule-transfer {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        flex-wrap: wrap;
+        margin-top: 12px;
+      }
+
+      .rule-transfer select {
+        width: auto;
+        min-width: 120px;
+      }
+
+      .file-input {
+        width: auto;
+        max-width: 320px;
+      }
+
       pre {
         margin: 0;
         white-space: pre-wrap;
@@ -616,33 +696,21 @@ router.get('/admin', (_req, res) => {
       <h1>ApeRelay Admin</h1>
       <p class="lead">規則流程採用「先來源，再目標」。來源與目標各自獨立設定，不再混雜。</p>
 
-      <section class="card slack-card">
-        <div class="slack-title">
-          <h2>目標資源（Slack）候選池</h2>
-          <span class="chip">非規則本體</span>
-        </div>
-        <p class="hint">這裡只負責載入可選目標（頻道/標記對象）。真正要送去哪裡，仍在每一條規則的「目標設定」內決定。</p>
-
-        <div class="grid">
-          <div class="kv">
-            <div class="k">ENV 預設頻道</div>
-            <div class="v" id="slackDefaultChannel">-</div>
-          </div>
-          <div class="kv">
-            <div class="k">可選頻道 / 人員 / 群組</div>
-            <div class="v" id="slackLoadSummary">-</div>
-          </div>
-        </div>
-
-        <div class="actions">
-          <button id="refreshSlackOptionsBtn" class="ghost">重新載入 Slack 資源</button>
-        </div>
-        <div id="slackErrorStatus" class="warn"></div>
-      </section>
+    
 
       <section class="card">
         <h2>規則總覽（共享）</h2>
         <p class="hint">這裡顯示全部來源規則（Discord + LINE）。可直接在這裡啟用/停用、編輯、刪除。</p>
+        <div class="rule-transfer">
+          <button id="exportRulesBtn" class="ghost" type="button">匯出全部規則</button>
+          <select id="importRulesMode" aria-label="匯入模式">
+            <option value="merge">匯入並合併新增</option>
+            <option value="replace">匯入並覆蓋全部</option>
+          </select>
+          <input id="importRulesFile" class="file-input" type="file" accept="application/json,.json" />
+          <button id="importRulesBtn" class="secondary" type="button">匯入規則</button>
+        </div>
+        <div id="ruleTransferStatus" class="hint"></div>
         <table class="rules-table">
           <thead>
             <tr>
@@ -650,7 +718,7 @@ router.get('/admin', (_req, res) => {
               <th>規則名稱</th>
               <th>來源</th>
               <th>目標</th>
-              <th>標記</th>
+              <th>通知對象</th>
               <th>來源篩選</th>
               <th>啟用</th>
               <th>操作</th>
@@ -662,8 +730,8 @@ router.get('/admin', (_req, res) => {
 
       <section class="card">
         <div class="tabs" id="tabNav">
-          <button class="tab-btn active" data-tab="discord">Discord 規則</button>
-          <button class="tab-btn" data-tab="line">LINE 規則</button>
+          <button class="tab-btn active" data-tab="discord">🎮 Discord 規則</button>
+          <button class="tab-btn" data-tab="line">🟢 LINE 規則</button>
           <button class="tab-btn" data-tab="diag">診斷</button>
         </div>
       </section>
@@ -740,6 +808,20 @@ router.get('/admin', (_req, res) => {
 
       <section id="tab-line" class="tab-panel">
         <div class="card">
+          <h2>LINE 全域排除發言者</h2>
+          <p class="hint">會和每條 LINE 規則的排除名單 union，執行期即時生效。</p>
+          <label>LINE User ID（多個用逗號分隔）</label>
+          <input id="globalExcludedLineSpeakerIds" placeholder="例如 U123abc..., U999xyz..." />
+          <label>從最近發言者加入（可多選）</label>
+          <select id="globalLineExcludedSpeakerSelect" multiple size="6"></select>
+          <div class="actions">
+            <button id="addGlobalLineExcludedSpeakerBtn" class="secondary">加入到 LINE 全域排除</button>
+            <button id="saveLineGlobalSettingsBtn">儲存 LINE 全域設定</button>
+          </div>
+          <div id="lineGlobalSettingsStatus" class="hint"></div>
+        </div>
+
+        <div class="card">
           <h2>新增/編輯 LINE 規則</h2>
           <p class="hint">流程同樣是先來源、再目標。可直接從最近收到訊息的群組建立來源。</p>
 
@@ -753,12 +835,12 @@ router.get('/admin', (_req, res) => {
             <input id="lineGroupId" placeholder="groupId（可手動貼上）" />
             <div id="lineGroupStatus" class="hint"></div>
 
-            <label>允許轉發發言者（LINE userId，多個用逗號分隔；留空代表全部）</label>
-            <input id="lineAllowedSpeakerIds" placeholder="例如 U123abc..., U999xyz..." />
+            <label>預設排除對象（LINE userId，多個用逗號分隔；留空代表不排除）</label>
+            <input id="lineExcludedSpeakerIds" placeholder="例如 U123abc..., U999xyz..." />
             <label>從最近發言者加入（可多選）</label>
             <select id="lineSpeakerSelect" multiple size="6"></select>
             <div class="actions">
-              <button id="addLineSpeakerBtn" class="secondary">加入到允許名單</button>
+              <button id="addLineSpeakerBtn" class="secondary">加入到規則排除</button>
               <button id="refreshLineSourcesBtn" class="ghost">更新最近 LINE 群組/發言者</button>
             </div>
           </div>
@@ -793,6 +875,29 @@ router.get('/admin', (_req, res) => {
           <pre id="lineDebugDump">(loading...)</pre>
         </div>
       </section>
+        <section class="card slack-card">
+        <div class="slack-title">
+          <h2>目標資源（Slack）候選池</h2>
+          <span class="chip">非規則本體</span>
+        </div>
+        <p class="hint">這裡只負責載入可選目標（頻道/標記對象）。真正要送去哪裡，仍在每一條規則的「目標設定」內決定。</p>
+
+        <div class="grid">
+          <div class="kv">
+            <div class="k">ENV 預設頻道</div>
+            <div class="v" id="slackDefaultChannel">-</div>
+          </div>
+          <div class="kv">
+            <div class="k">可選頻道 / 人員 / 群組</div>
+            <div class="v" id="slackLoadSummary">-</div>
+          </div>
+        </div>
+
+        <div class="actions">
+          <button id="refreshSlackOptionsBtn" class="ghost">重新載入 Slack 資源</button>
+        </div>
+        <div id="slackErrorStatus" class="warn"></div>
+      </section>
     </div>
 
     <script>
@@ -808,7 +913,7 @@ router.get('/admin', (_req, res) => {
         loaded: { channels: 0, users: 0, usergroups: 0 },
       };
 
-      let relaySettings = { globalExcludedAuthorIds: [] };
+      let relaySettings = { globalExcludedAuthorIds: [], globalExcludedLineSpeakerIds: [] };
       let recentDiscordAuthors = [];
       let editingDiscordRuleId = null;
       let editingLineRuleId = null;
@@ -984,6 +1089,18 @@ router.get('/admin', (_req, res) => {
           + '</div>';
       }
 
+      function renderPlatformBadge(platform) {
+        if (platform === 'Discord') {
+          return '<span class="platform-badge discord" title="Discord" aria-label="Discord">🎮</span>';
+        }
+
+        if (platform === 'LINE') {
+          return '<span class="platform-badge line" title="LINE" aria-label="LINE">🟢</span>';
+        }
+
+        return '<span class="platform-badge" title="Webhook" aria-label="Webhook">🔗</span>';
+      }
+
       async function fetchDiscordSources() {
         const res = await fetch('/api/admin/discord-sources');
         const json = await res.json();
@@ -1026,7 +1143,40 @@ router.get('/admin', (_req, res) => {
       async function fetchSettings() {
         const res = await fetch('/api/admin/settings');
         const json = await res.json();
-        return json.settings || { globalExcludedAuthorIds: [] };
+        return json.settings || { globalExcludedAuthorIds: [], globalExcludedLineSpeakerIds: [] };
+      }
+
+      async function exportRulesFile() {
+        const res = await fetch('/api/admin/rules-export');
+        if (!res.ok) {
+          throw new Error('export rules failed');
+        }
+
+        const blob = await res.blob();
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = 'ape-relay-rules-' + new Date().toISOString().slice(0, 10) + '.json';
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+        URL.revokeObjectURL(url);
+      }
+
+      async function importRulesFile(file, mode) {
+        const text = await file.text();
+        const data = JSON.parse(text);
+        const res = await fetch('/api/admin/rules-import', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ mode, data }),
+        });
+
+        if (!res.ok) {
+          throw new Error('import rules failed');
+        }
+
+        return res.json();
       }
 
       async function fetchDiscordAuthors(guildId) {
@@ -1054,7 +1204,7 @@ router.get('/admin', (_req, res) => {
         }
 
         const json = await res.json();
-        return json.settings || { globalExcludedAuthorIds: [] };
+        return json.settings || { globalExcludedAuthorIds: [], globalExcludedLineSpeakerIds: [] };
       }
 
       function renderSlackSummary() {
@@ -1191,6 +1341,31 @@ router.get('/admin', (_req, res) => {
         const input = asInput('globalExcludedAuthorIds');
         if (input) {
           input.value = (relaySettings.globalExcludedAuthorIds || []).join(', ');
+        }
+
+        const lineInput = asInput('globalExcludedLineSpeakerIds');
+        if (lineInput) {
+          lineInput.value = (relaySettings.globalExcludedLineSpeakerIds || []).join(', ');
+        }
+      }
+
+      function renderGlobalLineSpeakerOptions() {
+        const select = asSelect('globalLineExcludedSpeakerSelect');
+        if (!select) return;
+
+        select.innerHTML = '';
+        const seen = new Set();
+        for (const group of lineSources) {
+          for (const speaker of group.speakers || []) {
+            if (seen.has(speaker.id)) {
+              continue;
+            }
+            seen.add(speaker.id);
+            const option = document.createElement('option');
+            option.value = speaker.id;
+            option.textContent = speaker.displayName + ' (' + speaker.id + ')';
+            select.appendChild(option);
+          }
         }
       }
 
@@ -1408,7 +1583,7 @@ router.get('/admin', (_req, res) => {
           cancelBtn.style.display = 'none';
         }
 
-        const fields = ['lineName', 'lineGroupId', 'lineSlackChannel', 'lineMentionsCustom', 'lineAllowedSpeakerIds'];
+        const fields = ['lineName', 'lineGroupId', 'lineSlackChannel', 'lineMentionsCustom', 'lineExcludedSpeakerIds'];
         for (const id of fields) {
           const input = asInput(id);
           if (input) input.value = '';
@@ -1482,9 +1657,9 @@ router.get('/admin', (_req, res) => {
           custom.value = Array.from(mentionTargets).join(', ');
         }
 
-        const speakers = asInput('lineAllowedSpeakerIds');
+        const speakers = asInput('lineExcludedSpeakerIds');
         if (speakers) {
-          speakers.value = (rule.allowedSpeakerIds || []).join(', ');
+          speakers.value = (rule.excludedSpeakerIds || []).join(', ');
         }
 
         const saveBtn = byId('saveLineRuleBtn');
@@ -1527,7 +1702,7 @@ router.get('/admin', (_req, res) => {
               .join(' ');
 
             tr.innerHTML = [
-              '<td>Discord</td>',
+              '<td>' + renderPlatformBadge('Discord') + '</td>',
               '<td>' + escapeHtml(rule.name) + '</td>',
               '<td>' + renderDiscordSourceCell(rule) + '</td>',
               '<td title="' + escapeHtml(rule.targetSlackChannel) + '">' + renderTargetCell(rule.targetSlackChannel) + '</td>',
@@ -1540,12 +1715,12 @@ router.get('/admin', (_req, res) => {
             const rule = item.rule;
 
             tr.innerHTML = [
-              '<td>LINE</td>',
+              '<td>' + renderPlatformBadge('LINE') + '</td>',
               '<td>' + escapeHtml(rule.name) + '</td>',
               '<td>' + renderLineSourceCell(rule) + '</td>',
               '<td title="' + escapeHtml(rule.targetSlackChannel) + '">' + renderTargetCell(rule.targetSlackChannel) + '</td>',
               '<td>' + renderMentionList(rule.mentionTargets || []) + '</td>',
-              '<td>' + ((rule.allowedSpeakerIds || []).length ? '<div class="cell-stack">' + (rule.allowedSpeakerIds || []).map((id) => renderCellLine('Speaker', id)).join('') + '</div>' : '<span class="cell-value">全部</span>') + '</td>',
+              '<td>' + ((rule.excludedSpeakerIds || []).length ? '<div class="cell-stack">' + (rule.excludedSpeakerIds || []).map((id) => renderCellLine('Exclude', id)).join('') + '</div>' : '<span class="cell-value">無</span>') + '</td>',
               '<td><input type="checkbox" ' + (rule.enabled ? 'checked' : '') + ' data-action="toggle-line" data-id="' + rule.id + '" /></td>',
               '<td><div class="table-actions"><button class="secondary" data-action="edit-line" data-id="' + rule.id + '">編輯</button><button class="secondary" data-action="delete-line" data-id="' + rule.id + '">刪除</button></div></td>',
             ].join('');
@@ -1589,6 +1764,57 @@ router.get('/admin', (_req, res) => {
       }
 
       function wireEvents() {
+        byId('exportRulesBtn')?.addEventListener('click', async () => {
+          const status = byId('ruleTransferStatus');
+          try {
+            await exportRulesFile();
+            if (status instanceof HTMLElement) {
+              status.textContent = '已匯出目前所有規則與全域設定。';
+            }
+          } catch {
+            if (status instanceof HTMLElement) {
+              status.textContent = '匯出失敗，請稍後再試。';
+            }
+          }
+        });
+
+        byId('importRulesBtn')?.addEventListener('click', async () => {
+          const fileInput = byId('importRulesFile');
+          const modeSelect = asSelect('importRulesMode');
+          const status = byId('ruleTransferStatus');
+          if (!(fileInput instanceof HTMLInputElement) || !fileInput.files?.length) {
+            if (status instanceof HTMLElement) {
+              status.textContent = '請先選擇要匯入的 JSON 檔。';
+            }
+            return;
+          }
+
+          const mode = modeSelect?.value === 'replace' ? 'replace' : 'merge';
+          const confirmMessage = mode === 'replace'
+            ? '這會覆蓋目前所有 Discord/LINE 規則與全域排除設定，確定要匯入？'
+            : '這會把檔案內的規則合併新增到目前設定，確定要匯入？';
+
+          if (!window.confirm(confirmMessage)) {
+            return;
+          }
+
+          try {
+            const result = await importRulesFile(fileInput.files[0], mode);
+            const summary = result.summary || { discordRules: 0, lineRules: 0, globalExcludedAuthorIds: 0, globalExcludedLineSpeakerIds: 0 };
+            relaySettings = await fetchSettings();
+            renderGlobalSettings();
+            await refreshSharedRules();
+            fileInput.value = '';
+            if (status instanceof HTMLElement) {
+              status.textContent = '匯入完成：Discord ' + summary.discordRules + ' 條、LINE ' + summary.lineRules + ' 條、Discord 全域排除 ' + summary.globalExcludedAuthorIds + ' 筆、LINE 全域排除 ' + summary.globalExcludedLineSpeakerIds + ' 筆。';
+            }
+          } catch {
+            if (status instanceof HTMLElement) {
+              status.textContent = '匯入失敗，請確認 JSON 是從 ApeRelay 匯出的規則檔。';
+            }
+          }
+        });
+
         byId('refreshSlackOptionsBtn')?.addEventListener('click', async () => {
           slackOptions = await fetchSlackOptions();
           renderSlackSummary();
@@ -1606,6 +1832,7 @@ router.get('/admin', (_req, res) => {
         byId('refreshLineSourcesBtn')?.addEventListener('click', async () => {
           lineSources = await fetchLineSources();
           renderLineGroupOptions();
+          renderGlobalLineSpeakerOptions();
           const groupId = asInput('lineGroupId')?.value.trim() || asSelect('lineGroupSelect')?.value || '';
           renderLineSpeakerOptions(groupId);
           await refreshSharedRules();
@@ -1634,6 +1861,25 @@ router.get('/admin', (_req, res) => {
           }
         });
 
+        byId('saveLineGlobalSettingsBtn')?.addEventListener('click', async () => {
+          const input = asInput('globalExcludedLineSpeakerIds');
+          const values = input ? splitCSV(input.value) : [];
+
+          try {
+            relaySettings = await saveSettings({ globalExcludedLineSpeakerIds: values });
+            renderGlobalSettings();
+            const status = byId('lineGlobalSettingsStatus');
+            if (status instanceof HTMLElement) {
+              status.textContent = 'LINE 全域排除發言者已儲存（執行期 union 立即生效）。';
+            }
+          } catch {
+            const status = byId('lineGlobalSettingsStatus');
+            if (status instanceof HTMLElement) {
+              status.textContent = '儲存 LINE 全域設定失敗，請稍後再試。';
+            }
+          }
+        });
+
         byId('addGlobalExcludedAuthorBtn')?.addEventListener('click', () => {
           const select = asSelect('globalExcludedAuthorSelect');
           const input = asInput('globalExcludedAuthorIds');
@@ -1650,9 +1896,17 @@ router.get('/admin', (_req, res) => {
           mergeIdsToInput(input, ids);
         });
 
+        byId('addGlobalLineExcludedSpeakerBtn')?.addEventListener('click', () => {
+          const select = asSelect('globalLineExcludedSpeakerSelect');
+          const input = asInput('globalExcludedLineSpeakerIds');
+          if (!select || !input) return;
+          const ids = Array.from(select.selectedOptions).map((option) => option.value.trim()).filter(Boolean);
+          mergeIdsToInput(input, ids);
+        });
+
         byId('addLineSpeakerBtn')?.addEventListener('click', () => {
           const select = asSelect('lineSpeakerSelect');
-          const input = asInput('lineAllowedSpeakerIds');
+          const input = asInput('lineExcludedSpeakerIds');
           if (!select || !input) return;
           const ids = Array.from(select.selectedOptions).map((option) => option.value.trim()).filter(Boolean);
           mergeIdsToInput(input, ids);
@@ -1745,7 +1999,7 @@ router.get('/admin', (_req, res) => {
             sourceGroupId: asInput('lineGroupId')?.value || '',
             targetSlackChannel: asInput('lineSlackChannel')?.value || '',
             mentionTargets: collectMentionTargets('lineMentionTargets', 'lineMentionsCustom'),
-            allowedSpeakerIds: splitCSV(asInput('lineAllowedSpeakerIds')?.value || ''),
+            excludedSpeakerIds: splitCSV(asInput('lineExcludedSpeakerIds')?.value || ''),
             enabled: Boolean(asInput('lineEnabled')?.checked),
           };
 
@@ -1855,6 +2109,7 @@ router.get('/admin', (_req, res) => {
         renderGuildOptions();
         renderChannelOptions('');
         renderLineGroupOptions();
+        renderGlobalLineSpeakerOptions();
 
         renderSlackSummary();
         renderSlackChannelOptions('discordSlackChannelSelect');
