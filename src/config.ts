@@ -42,6 +42,7 @@ export const config = {
     botToken: requireEnv('DISCORD_BOT_TOKEN'),
     allowedGuildIds: splitIds(process.env['DISCORD_ALLOWED_GUILD_IDS'] ?? ''),
     allowedChannelIds: splitIds(process.env['DISCORD_ALLOWED_CHANNEL_IDS'] ?? ''),
+    excludedUserIds: splitIds(process.env['DISCORD_EXCLUDED_USER_IDS'] ?? ''),
   },
 
   timezone: process.env['TIMEZONE'] ?? 'Asia/Taipei',

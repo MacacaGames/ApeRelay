@@ -72,6 +72,7 @@ LINE_CHANNEL_ACCESS_TOKEN=你的_access_token
 DISCORD_BOT_TOKEN=你的_bot_token
 DISCORD_ALLOWED_GUILD_IDS=Guild的雪花ID        # 多個用逗號分隔
 DISCORD_ALLOWED_CHANNEL_IDS=Channel的雪花ID   # 多個用逗號分隔
+DISCORD_EXCLUDED_USER_IDS=內部人員的Discord User ID   # 可選，多個用逗號分隔
 
 TIMEZONE=Asia/Taipei
 LOG_LEVEL=info
@@ -208,7 +209,14 @@ BASE_URL=https://relay.example.com ./test.sh
 - Discord 來源：Guild / Channel（支援下拉選單或手動輸入 ID）
 - Slack 目標頻道：`#channel` 或 `C123...`
 - 預設標記：可多選（例如 `<!here>` + `<@U123456>`）
+- 排除作者：可填 Discord User ID（內部人員）避免把內部對話轉出去
 - 啟用/停用
+- 排除作者欄位支援「近期作者」多選加入，避免手動查找 User ID
+
+另外可在 Admin 設定「全域排除作者（Global）」，會在執行期與每條規則的排除作者做 union：
+
+- `最終排除清單 = ENV 全域 + Admin Global + 規則排除`
+- 新增規則時不會把 global 複製到規則，避免後續不同步
 
 規則是平行生效的，系統會依來源比對命中的規則進行轉發。
 

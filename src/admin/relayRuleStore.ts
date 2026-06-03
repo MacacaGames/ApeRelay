@@ -5,6 +5,7 @@ import type { DiscordRelayRule } from '../types.js';
 
 type RelayRuleStoreData = {
   discordRules: DiscordRelayRule[];
+  globalExcludedAuthorIds: string[];
 };
 
 const DATA_DIR = path.join(process.cwd(), 'data');
@@ -16,7 +17,10 @@ async function ensureStoreFile(): Promise<void> {
   try {
     await fs.access(DATA_FILE);
   } catch {
-    const initialData: RelayRuleStoreData = { discordRules: [] };
+    const initialData: RelayRuleStoreData = {
+      discordRules: [],
+      globalExcludedAuthorIds: [],
+    };
     await fs.writeFile(DATA_FILE, JSON.stringify(initialData, null, 2), 'utf8');
   }
 }
@@ -44,10 +48,17 @@ async function readStore(): Promise<RelayRuleStoreData> {
       sourceChannelId: String(raw.sourceChannelId),
       targetSlackChannel: String(raw.targetSlackChannel),
       mentionTargets,
+      excludedAuthorIds: Array.isArray(raw.excludedAuthorIds)
+        ? raw.excludedAuthorIds.map((value) => String(value).trim()).filter(Boolean)
+        : [],
     };
   });
 
-  return { discordRules };
+  const globalExcludedAuthorIds = Array.isArray(parsed.globalExcludedAuthorIds)
+    ? parsed.globalExcludedAuthorIds.map((value) => String(value).trim()).filter(Boolean)
+    : [];
+
+  return { discordRules, globalExcludedAuthorIds };
 }
 
 async function writeStore(data: RelayRuleStoreData): Promise<void> {
@@ -58,6 +69,42 @@ async function writeStore(data: RelayRuleStoreData): Promise<void> {
 export async function getDiscordRelayRules(): Promise<DiscordRelayRule[]> {
   const store = await readStore();
   return store.discordRules;
+}
+
+export async function getRelaySettings(): Promise<{ globalExcludedAuthorIds: string[] }> {
+  const store = await readStore();
+  return {
+    globalExcludedAuthorIds: store.globalExcludedAuthorIds,
+  };
+}
+
+export async function updateRelaySettings(patch: {
+  globalExcludedAuthorIds?: string[];
+}): Promise<{ globalExcludedAuthorIds: string[] }> {
+  const store = await readStore();
+
+  if (Array.isArray(patch.globalExcludedAuthorIds)) {
+    store.globalExcludedAuthorIds = patch.globalExcludedAuthorIds
+      .map((value) => String(value).trim())
+      .filter(Boolean);
+  }
+
+  await writeStore(store);
+
+  return {
+    globalExcludedAuthorIds: store.globalExcludedAuthorIds,
+  };
+}
+
+export async function getDiscordRelayRuntimeConfig(): Promise<{
+  rules: DiscordRelayRule[];
+  globalExcludedAuthorIds: string[];
+}> {
+  const store = await readStore();
+  return {
+    rules: store.discordRules,
+    globalExcludedAuthorIds: store.globalExcludedAuthorIds,
+  };
 }
 
 export async function createDiscordRelayRule(

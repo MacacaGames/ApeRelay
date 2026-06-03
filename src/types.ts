@@ -19,6 +19,7 @@ export interface DiscordRelayRule {
   sourceChannelId: string;
   targetSlackChannel: string;
   mentionTargets?: string[];
+  excludedAuthorIds?: string[];
 }
 
 export interface DiscordSourceChannelOption {

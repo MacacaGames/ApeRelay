@@ -4,9 +4,11 @@ import {
   createDiscordRelayRule,
   deleteDiscordRelayRule,
   getDiscordRelayRules,
+  getRelaySettings,
   updateDiscordRelayRule,
+  updateRelaySettings,
 } from '../admin/relayRuleStore.js';
-import { getDiscordSourceOptions } from '../discord/discordClient.js';
+import { getDiscordRecentAuthorOptions, getDiscordSourceOptions } from '../discord/discordClient.js';
 import { config } from '../config.js';
 import { logger } from '../logger.js';
 import type { DiscordRelayRule } from '../types.js';
@@ -149,12 +151,21 @@ function parseRuleInput(
     mentionTargets: Array.isArray(input.mentionTargets)
       ? input.mentionTargets.map((value) => String(value).trim()).filter(Boolean)
       : [],
+    excludedAuthorIds: Array.isArray(input.excludedAuthorIds)
+      ? input.excludedAuthorIds.map((value) => String(value).trim()).filter(Boolean)
+      : [],
   };
 }
 
 router.get('/api/admin/discord-sources', (_req, res) => {
   const sources = getDiscordSourceOptions();
   res.json({ ok: true, ...sources });
+});
+
+router.get('/api/admin/discord-authors', (req, res) => {
+  const guildId = typeof req.query.guildId === 'string' ? req.query.guildId.trim() : '';
+  const authors = getDiscordRecentAuthorOptions(guildId || undefined);
+  res.json({ ok: true, authors });
 });
 
 router.get('/api/admin/slack-options', async (_req, res) => {
@@ -173,6 +184,22 @@ router.get('/api/admin/slack-options', async (_req, res) => {
 router.get('/api/admin/discord-rules', async (_req, res) => {
   const rules = await getDiscordRelayRules();
   res.json({ ok: true, rules });
+});
+
+router.get('/api/admin/settings', async (_req, res) => {
+  const settings = await getRelaySettings();
+  res.json({ ok: true, settings });
+});
+
+router.put('/api/admin/settings', async (req, res) => {
+  const body = req.body as { globalExcludedAuthorIds?: unknown };
+
+  const globalExcludedAuthorIds = Array.isArray(body.globalExcludedAuthorIds)
+    ? body.globalExcludedAuthorIds.map((value) => String(value).trim()).filter(Boolean)
+    : [];
+
+  const settings = await updateRelaySettings({ globalExcludedAuthorIds });
+  res.json({ ok: true, settings });
 });
 
 router.post('/api/admin/discord-rules', async (req, res) => {
@@ -198,6 +225,11 @@ router.put('/api/admin/discord-rules/:id', async (req, res) => {
   if (typeof body.targetSlackChannel === 'string') patch.targetSlackChannel = body.targetSlackChannel.trim();
   if (Array.isArray(body.mentionTargets)) {
     patch.mentionTargets = body.mentionTargets
+      .map((value) => String(value).trim())
+      .filter(Boolean);
+  }
+  if (Array.isArray(body.excludedAuthorIds)) {
+    patch.excludedAuthorIds = body.excludedAuthorIds
       .map((value) => String(value).trim())
       .filter(Boolean);
   }
@@ -251,6 +283,18 @@ router.get('/admin', (_req, res) => {
     <p class="hint">管理多組 Discord → Slack 規則。每組規則可設定目標 Slack 頻道與預設標記。</p>
 
     <div class="card">
+      <h2>全域排除作者（Global）</h2>
+      <p class="hint">這份名單會在執行期與每條規則的排除名單做 union。新增規則時不會複製 global，後續修改可即時同步影響全部規則。</p>
+      <label>Discord User ID（多個用逗號分隔）</label>
+      <input id="globalExcludedAuthorIds" placeholder="例如 123456789012345678, 987654321098765432" />
+      <label style="margin-top:8px;">從近期作者加入（可多選）</label>
+      <select id="globalExcludedAuthorSelect" multiple size="6"></select>
+      <button id="addGlobalExcludedAuthorBtn" class="secondary" style="margin-top:8px;">加入到全域排除</button>
+      <button id="saveGlobalSettingsBtn" style="margin-top:8px;">儲存全域設定</button>
+      <div id="globalSettingsStatus" class="hint" style="margin-top:8px;"></div>
+    </div>
+
+    <div class="card">
       <h2>操作教學</h2>
       <ol class="list">
         <li>Discord Guild / Channel 可用下拉選，或手動輸入 ID（可從 Discord URL 取得）。</li>
@@ -295,6 +339,12 @@ router.get('/admin', (_req, res) => {
       <div id="slackErrorStatus" class="warning"></div>
       <input id="mentionsCustom" placeholder="額外自訂標記，多個用逗號分隔，例如 <@U12345>, <@U99999>" style="margin-top:8px;" />
 
+      <label>排除轉發作者（Discord User ID，多個用逗號分隔）</label>
+      <input id="excludedAuthorIds" placeholder="例如 123456789012345678, 987654321098765432" />
+      <label style="margin-top:8px;">從近期作者加入（可多選）</label>
+      <select id="excludedAuthorSelect" multiple size="6"></select>
+      <button id="addExcludedAuthorBtn" class="secondary" style="margin-top:8px;">加入到規則排除</button>
+
       <label><input id="enabled" type="checkbox" checked /> 啟用</label>
       <button id="createBtn">建立規則</button>
       <button id="cancelEditBtn" class="secondary" style="display:none; margin-left:8px;">取消編輯</button>
@@ -310,6 +360,7 @@ router.get('/admin', (_req, res) => {
             <th>Discord 來源</th>
             <th>Slack 目標</th>
             <th>預設標記</th>
+            <th>排除作者</th>
             <th>操作</th>
           </tr>
         </thead>
@@ -320,6 +371,8 @@ router.get('/admin', (_req, res) => {
     <script>
       let discordSources = [];
       let slackOptions = { channels: [], users: [], usergroups: [], errors: [], loaded: { channels: 0, users: 0, usergroups: 0 } };
+      let relaySettings = { globalExcludedAuthorIds: [] };
+      let recentDiscordAuthors = [];
       let editingRuleId = null;
 
       async function fetchRules() {
@@ -347,6 +400,34 @@ router.get('/admin', (_req, res) => {
           errors: json.errors || [],
           loaded: json.loaded || { channels: 0, users: 0, usergroups: 0 },
         };
+      }
+
+      async function fetchSettings() {
+        const res = await fetch('/api/admin/settings');
+        const json = await res.json();
+        return json.settings || { globalExcludedAuthorIds: [] };
+      }
+
+      async function fetchDiscordAuthors(guildId) {
+        const query = guildId ? '?guildId=' + encodeURIComponent(guildId) : '';
+        const res = await fetch('/api/admin/discord-authors' + query);
+        const json = await res.json();
+        return json.authors || [];
+      }
+
+      async function saveSettings(settings) {
+        const res = await fetch('/api/admin/settings', {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(settings),
+        });
+
+        if (!res.ok) {
+          throw new Error('save settings failed');
+        }
+
+        const json = await res.json();
+        return json.settings || { globalExcludedAuthorIds: [] };
       }
 
       function renderSlackChannelOptions() {
@@ -441,6 +522,58 @@ router.get('/admin', (_req, res) => {
         if (slackSelect instanceof HTMLSelectElement) {
           slackSelect.value = '';
         }
+
+        const excludedInput = document.getElementById('excludedAuthorIds');
+        if (excludedInput instanceof HTMLInputElement) {
+          excludedInput.value = '';
+        }
+      }
+
+      function renderGlobalSettings() {
+        const input = document.getElementById('globalExcludedAuthorIds');
+        if (input instanceof HTMLInputElement) {
+          input.value = (relaySettings.globalExcludedAuthorIds || []).join(', ');
+        }
+      }
+
+      function mergeIdsToInput(input, ids) {
+        const current = input.value
+          .split(',')
+          .map((value) => value.trim())
+          .filter(Boolean);
+        const merged = Array.from(new Set(current.concat(ids)));
+        input.value = merged.join(', ');
+      }
+
+      function renderExcludedAuthorOptions() {
+        const globalSelect = document.getElementById('globalExcludedAuthorSelect');
+        if (globalSelect instanceof HTMLSelectElement) {
+          globalSelect.innerHTML = '';
+          for (const author of recentDiscordAuthors) {
+            const option = document.createElement('option');
+            option.value = author.id;
+            option.textContent = author.displayName + ' (' + author.id + ')';
+            globalSelect.appendChild(option);
+          }
+        }
+
+        const ruleSelect = document.getElementById('excludedAuthorSelect');
+        if (ruleSelect instanceof HTMLSelectElement) {
+          ruleSelect.innerHTML = '';
+          for (const author of recentDiscordAuthors) {
+            const option = document.createElement('option');
+            option.value = author.id;
+            option.textContent = author.displayName + ' (' + author.id + ')';
+            ruleSelect.appendChild(option);
+          }
+        }
+      }
+
+      async function refreshExcludedAuthorOptions() {
+        const guildInput = document.getElementById('guildId');
+        const guildId = guildInput instanceof HTMLInputElement ? guildInput.value.trim() : '';
+        recentDiscordAuthors = await fetchDiscordAuthors(guildId || undefined);
+        renderExcludedAuthorOptions();
       }
 
       function normalizeChannelName(raw) {
@@ -584,6 +717,11 @@ router.get('/admin', (_req, res) => {
           custom.value = Array.from(mentionTargets).join(', ');
         }
 
+        const excludedInput = document.getElementById('excludedAuthorIds');
+        if (excludedInput instanceof HTMLInputElement) {
+          excludedInput.value = (rule.excludedAuthorIds || []).join(', ');
+        }
+
         const createBtn = document.getElementById('createBtn');
         if (createBtn instanceof HTMLButtonElement) {
           createBtn.textContent = '更新規則';
@@ -594,6 +732,7 @@ router.get('/admin', (_req, res) => {
         }
 
         editingRuleId = rule.id;
+        refreshExcludedAuthorOptions();
       }
 
       function renderGuildOptions() {
@@ -663,6 +802,7 @@ router.get('/admin', (_req, res) => {
             .map((value) => getMentionDisplay(value))
             .filter(Boolean)
             .join(' ');
+          const excludedDisplay = (rule.excludedAuthorIds || []).join(', ');
           const tr = document.createElement('tr');
           const checkedAttr = rule.enabled ? 'checked' : '';
           tr.innerHTML = [
@@ -671,6 +811,7 @@ router.get('/admin', (_req, res) => {
             '<td>' + rule.sourceGuildId + ' / ' + rule.sourceChannelId + '</td>',
             '<td title="' + rule.targetSlackChannel + '">' + slackTargetDisplay + '</td>',
             '<td>' + mentionDisplay + '</td>',
+            '<td>' + excludedDisplay + '</td>',
             '<td class="row-actions">',
             '<button class="secondary" data-action="edit" data-id="' + rule.id + '">編輯</button>',
             '<button class="secondary" data-action="delete" data-id="' + rule.id + '">刪除</button>',
@@ -681,12 +822,18 @@ router.get('/admin', (_req, res) => {
       }
 
       document.getElementById('createBtn').addEventListener('click', async () => {
+        const excludedInput = document.getElementById('excludedAuthorIds');
+        const excludedAuthorIds = excludedInput instanceof HTMLInputElement
+          ? excludedInput.value.split(',').map((value) => value.trim()).filter(Boolean)
+          : [];
+
         const payload = {
           name: document.getElementById('name').value,
           sourceGuildId: document.getElementById('guildId').value,
           sourceChannelId: document.getElementById('channelId').value,
           targetSlackChannel: document.getElementById('slackChannel').value,
           mentionTargets: collectMentionTargets(),
+          excludedAuthorIds,
           enabled: document.getElementById('enabled').checked,
         };
 
@@ -712,10 +859,56 @@ router.get('/admin', (_req, res) => {
           document.getElementById('channelId').value = '';
           document.getElementById('slackChannel').value = '';
           document.getElementById('mentionsCustom').value = '';
+          document.getElementById('excludedAuthorIds').value = '';
         }
 
         setCreateMode();
         await refreshRules();
+      });
+
+      document.getElementById('saveGlobalSettingsBtn').addEventListener('click', async () => {
+        const input = document.getElementById('globalExcludedAuthorIds');
+        const values = input instanceof HTMLInputElement
+          ? input.value.split(',').map((value) => value.trim()).filter(Boolean)
+          : [];
+
+        try {
+          relaySettings = await saveSettings({ globalExcludedAuthorIds: values });
+          renderGlobalSettings();
+          const status = document.getElementById('globalSettingsStatus');
+          if (status instanceof HTMLElement) {
+            status.textContent = '全域排除作者已儲存（執行期 union 立即生效）。';
+          }
+        } catch {
+          const status = document.getElementById('globalSettingsStatus');
+          if (status instanceof HTMLElement) {
+            status.textContent = '儲存全域設定失敗，請稍後再試。';
+          }
+        }
+      });
+
+      document.getElementById('addGlobalExcludedAuthorBtn').addEventListener('click', () => {
+        const select = document.getElementById('globalExcludedAuthorSelect');
+        const input = document.getElementById('globalExcludedAuthorIds');
+        if (!(select instanceof HTMLSelectElement) || !(input instanceof HTMLInputElement)) {
+          return;
+        }
+        const ids = Array.from(select.selectedOptions)
+          .map((option) => option.value.trim())
+          .filter(Boolean);
+        mergeIdsToInput(input, ids);
+      });
+
+      document.getElementById('addExcludedAuthorBtn').addEventListener('click', () => {
+        const select = document.getElementById('excludedAuthorSelect');
+        const input = document.getElementById('excludedAuthorIds');
+        if (!(select instanceof HTMLSelectElement) || !(input instanceof HTMLInputElement)) {
+          return;
+        }
+        const ids = Array.from(select.selectedOptions)
+          .map((option) => option.value.trim())
+          .filter(Boolean);
+        mergeIdsToInput(input, ids);
       });
 
       document.getElementById('cancelEditBtn').addEventListener('click', () => {
@@ -732,6 +925,11 @@ router.get('/admin', (_req, res) => {
         }
 
         renderChannelOptions(select.value);
+        refreshExcludedAuthorOptions();
+      });
+
+      document.getElementById('guildId').addEventListener('change', () => {
+        refreshExcludedAuthorOptions();
       });
 
       document.getElementById('channelSelect').addEventListener('change', (event) => {
@@ -794,9 +992,12 @@ router.get('/admin', (_req, res) => {
       (async () => {
         discordSources = await fetchDiscordSources();
         slackOptions = await fetchSlackOptions();
+        relaySettings = await fetchSettings();
+        await refreshExcludedAuthorOptions();
         renderGuildOptions();
         renderSlackChannelOptions();
         renderMentionOptions();
+        renderGlobalSettings();
         renderSlackLoadStatus();
         setCreateMode();
         await refreshRules();
