@@ -105,6 +105,41 @@ docker compose logs -f
 
 服務預設監聽 `http://localhost:3000`。
 
+### GHCR（M5 第一版）
+
+已提供 GitHub Actions workflow：[.github/workflows/ghcr.yml](.github/workflows/ghcr.yml)
+
+- push 到 `master` / `main` 會自動 build 並推送 image 到 GHCR
+- 打 tag（例如 `v0.5.0`）會產生對應版本 tag
+- PR 只 build 不 push
+
+Image 名稱格式：
+
+```bash
+ghcr.io/<github-owner>/<repo>
+```
+
+例如：
+
+```bash
+ghcr.io/macacagames/aperelay:master
+ghcr.io/macacagames/aperelay:latest
+ghcr.io/macacagames/aperelay:v0.5.0
+```
+
+首次使用請確認：
+
+1. Repository 的 Actions 有啟用
+2. Repository 的 package 權限允許推送到 GHCR
+3. 若要讓 Unraid 可直接拉取，將 GHCR package visibility 設為可讀（public 或授權 token）
+
+Unraid 部署建議：
+
+1. 在 Unraid Container 設定 image：`ghcr.io/<github-owner>/<repo>:vX.Y.Z`
+2. 環境變數直接在 Unraid UI 設定（不要寫入 repo）
+3. 掛載資料目錄保存規則檔（例如 `data/relay-rules.json`）
+4. 先固定版本 tag，驗證後再升級到新 tag，方便回滾
+
 ---
 
 ## 第四步：驗證 Slack 轉發是否正常
@@ -220,21 +255,22 @@ src/
 
 ## 開發里程碑
 
-### 目前進度（2026-06-02）
+### 目前進度（2026-06-03）
 
 - 已完成 M1：Slack 核心轉發（Bot Token + `chat.postMessage`）、`/health`、`/webhook/test-slack`。
 - 已完成本地啟動與驗證流程：`test.sh` 可自動補 `.env`、自動啟動服務、驗證健康檢查與 Slack 測試通知。
 - 已完成 VS Code 開發工作流：build task、typecheck task、debug 啟動設定。
 - M2 先擱置：LINE 功能改為可選啟用（缺少 LINE env 不會影響服務啟動）。
-- M3 已開始：Discord Bot 監聽、白名單過濾、訊息 normalize 並轉送 Slack。
-- M4 已開始：新增 Web Admin，可管理多組 Discord → Slack 規則，並支援每組預設標記對象。
-- 下一步目標：補上 Web Admin 認證與更完整的編輯體驗（目前先提供最小可用版）。
+- M3 已完成：Discord Bot 監聽、白名單過濾、訊息 normalize 並轉送 Slack。
+- M4 已完成：Web Admin 多組規則、來源下拉、Slack channel 與 mention 選項、規則編輯。
+- M5 已開始：GitHub Actions + GHCR image 發佈流程第一版。
+- 下一步目標：補上 Web Admin 認證與部署 SOP。
 
 | Milestone | 狀態 | 內容 |
 |-----------|------|------|
 | M1 Slack Core | ✅ 完成 | 基礎服務、/health、測試端點、Docker |
 | M2 LINE → Slack | ⏸️ 擱置 | LINE webhook、signature 驗證、訊息轉發（可選啟用） |
-| M3 Discord → Slack | 🔧 進行中 | Discord Bot、頻道監聽、白名單過濾 |
-| M4 Web Admin  | 🔧 進行中 | 在 WebAdmin 設定多組 Discord / LINE 來源並分流到不同 Slack 頻道，含持久化設定 |
-| M5 Production | ⬜ 待做 | Docker 容器化、log volume、部署文件 |
+| M3 Discord → Slack | ✅ 完成 | Discord Bot、頻道監聽、白名單過濾 |
+| M4 Web Admin  | ✅ 完成 | WebAdmin 多組規則、下拉選單、標記設定、持久化設定 |
+| M5 Production | 🔧 進行中 | GHCR 發佈流程、Unraid 部署文件與版本化升級 |
 | M6 SOP | ⬜ 待做 | 團隊使用說明、異常排查 |
