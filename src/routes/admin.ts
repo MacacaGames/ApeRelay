@@ -1,4 +1,4 @@
-import { Router } from 'express';
+import { Router, type Request } from 'express';
 import crypto from 'node:crypto';
 import { fetch } from 'undici';
 import {
@@ -30,10 +30,252 @@ import type {
 } from '../types.js';
 
 const router = Router();
+const ADMIN_AUTH_COOKIE = 'ape_admin_auth';
+const ADMIN_AUTH_MAX_AGE_SECONDS = 60 * 60 * 12;
 
 type SlackChannelOption = { id: string; name: string };
 type SlackUserOption = { id: string; displayName: string };
 type SlackUserGroupOption = { id: string; handle: string; name: string };
+
+function getCookieValue(cookieHeader: string | undefined, name: string): string {
+  if (!cookieHeader) {
+    return '';
+  }
+
+  const pair = cookieHeader
+    .split(';')
+    .map((part) => part.trim())
+    .find((part) => part.startsWith(`${name}=`));
+
+  if (!pair) {
+    return '';
+  }
+
+  return decodeURIComponent(pair.slice(name.length + 1));
+}
+
+function getAdminCookiePayload(): string {
+  if (!config.admin.password) {
+    return '';
+  }
+
+  return crypto
+    .createHash('sha256')
+    .update(`${config.admin.password}:${config.slack.botToken}`)
+    .digest('hex');
+}
+
+function isAdminAuthenticated(req: Request): boolean {
+  if (!config.admin.password) {
+    return true;
+  }
+
+  const cookie = getCookieValue(req.headers.cookie, ADMIN_AUTH_COOKIE);
+  return cookie === getAdminCookiePayload();
+}
+
+function buildAdminCookie(maxAgeSeconds: number): string {
+  const attrs = [
+    `Max-Age=${maxAgeSeconds}`,
+    'Path=/',
+    'HttpOnly',
+    'SameSite=Lax',
+  ];
+
+  if (config.publicBaseUrl.startsWith('https://')) {
+    attrs.push('Secure');
+  }
+
+  const value = maxAgeSeconds > 0 ? getAdminCookiePayload() : '';
+  return `${ADMIN_AUTH_COOKIE}=${encodeURIComponent(value)}; ${attrs.join('; ')}`;
+}
+
+router.use((req, res, next) => {
+  const authEnabled = Boolean(config.admin.password);
+  if (!authEnabled) {
+    next();
+    return;
+  }
+
+  const path = req.path;
+  const isAuthRoute =
+    path === '/admin/login' ||
+    path === '/api/admin/auth/login' ||
+    path === '/api/admin/auth/logout' ||
+    path === '/api/admin/auth/status';
+
+  if (isAuthRoute) {
+    next();
+    return;
+  }
+
+  const isProtectedRoute = path === '/admin' || path.startsWith('/api/admin/');
+  if (!isProtectedRoute) {
+    next();
+    return;
+  }
+
+  if (isAdminAuthenticated(req)) {
+    next();
+    return;
+  }
+
+  if (path.startsWith('/api/admin/')) {
+    res.status(401).json({ ok: false, message: 'Unauthorized' });
+    return;
+  }
+
+  res.redirect('/admin/login');
+});
+
+router.get('/admin/login', (req, res) => {
+  if (!config.admin.password || isAdminAuthenticated(req)) {
+    res.redirect('/admin');
+    return;
+  }
+
+  res.type('html').send(`<!doctype html>
+<html lang="zh-Hant">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>ApeRelay Admin Login</title>
+    <style>
+      :root {
+        --bg: #f1f5f9;
+        --card: #ffffff;
+        --line: #e2e8f0;
+        --text: #0f172a;
+        --muted: #64748b;
+        --brand: #0f766e;
+      }
+
+      * { box-sizing: border-box; }
+
+      body {
+        margin: 0;
+        min-height: 100vh;
+        display: grid;
+        place-items: center;
+        background: radial-gradient(circle at 20% -10%, #dbeafe 0%, transparent 35%), var(--bg);
+        font-family: "Noto Sans TC", "PingFang TC", sans-serif;
+        color: var(--text);
+      }
+
+      .card {
+        width: min(92vw, 420px);
+        background: var(--card);
+        border: 1px solid var(--line);
+        border-radius: 14px;
+        padding: 22px;
+      }
+
+      h1 { margin: 0; font-size: 22px; }
+
+      p {
+        margin: 8px 0 0;
+        color: var(--muted);
+        font-size: 14px;
+      }
+
+      form {
+        display: grid;
+        gap: 10px;
+        margin-top: 16px;
+      }
+
+      input {
+        width: 100%;
+        border: 1px solid var(--line);
+        border-radius: 10px;
+        padding: 10px 12px;
+        font-size: 14px;
+      }
+
+      button {
+        border: 0;
+        border-radius: 10px;
+        padding: 10px 12px;
+        background: var(--brand);
+        color: #fff;
+        font-weight: 700;
+        cursor: pointer;
+      }
+
+      .msg {
+        min-height: 20px;
+        color: #b91c1c;
+        font-size: 13px;
+      }
+    </style>
+  </head>
+  <body>
+    <section class="card">
+      <h1>ApeRelay Admin</h1>
+      <p>請輸入管理密碼</p>
+      <form id="login-form">
+        <input id="password" type="password" autocomplete="current-password" placeholder="Admin Password" required />
+        <button type="submit">登入</button>
+      </form>
+      <div class="msg" id="message"></div>
+    </section>
+
+    <script>
+      const form = document.getElementById('login-form');
+      const passwordInput = document.getElementById('password');
+      const messageEl = document.getElementById('message');
+
+      form.addEventListener('submit', async (event) => {
+        event.preventDefault();
+        messageEl.textContent = '';
+
+        const res = await fetch('/api/admin/auth/login', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ password: passwordInput.value }),
+        });
+
+        if (!res.ok) {
+          messageEl.textContent = '密碼錯誤';
+          return;
+        }
+
+        location.href = '/admin';
+      });
+    </script>
+  </body>
+</html>`);
+});
+
+router.post('/api/admin/auth/login', (req, res) => {
+  if (!config.admin.password) {
+    res.json({ ok: true, enabled: false });
+    return;
+  }
+
+  const body = req.body as { password?: unknown };
+  const input = typeof body.password === 'string' ? body.password : '';
+  if (input !== config.admin.password) {
+    res.status(401).json({ ok: false, message: 'Invalid password' });
+    return;
+  }
+
+  res.setHeader('Set-Cookie', buildAdminCookie(ADMIN_AUTH_MAX_AGE_SECONDS));
+  res.json({ ok: true });
+});
+
+router.post('/api/admin/auth/logout', (_req, res) => {
+  res.setHeader('Set-Cookie', buildAdminCookie(0));
+  res.json({ ok: true });
+});
+
+router.get('/api/admin/auth/status', (req, res) => {
+  res.json({
+    ok: true,
+    enabled: Boolean(config.admin.password),
+    authenticated: isAdminAuthenticated(req),
+  });
+});
 
 async function fetchSlackOptions(): Promise<{
   channels: SlackChannelOption[];

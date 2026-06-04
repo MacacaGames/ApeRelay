@@ -42,6 +42,10 @@ export const config = {
   port: parseInt(process.env['PORT'] ?? '3000', 10),
   publicBaseUrl: process.env['PUBLIC_BASE_URL'] ?? '',
 
+  admin: {
+    password: optionalEnv('ADMIN_PASSWORD'),
+  },
+
   slack: {
     botToken: requireEnv('SLACK_BOT_TOKEN'),
     defaultChannel: requireEnv('SLACK_DEFAULT_CHANNEL'),
