@@ -184,11 +184,19 @@ function resolveDiscordMentionTriggerMentions(
     return [];
   }
 
-  return trigger.mappings
+  const directoryMentions = (runtimeConfig.mentionDirectory?.identities ?? [])
+    .filter((item) => item.enabled && item.slackMention)
+    .filter((item) => (item.discordUserIds ?? []).some((id) => mentionedSet.has(String(id).trim())))
+    .map((item) => item.slackMention.trim())
+    .filter(Boolean);
+
+  const legacyMentions = trigger.mappings
     .filter((mapping) => mapping.enabled && mapping.discordUserId && mapping.slackMention)
     .filter((mapping) => mentionedSet.has(mapping.discordUserId))
     .map((mapping) => mapping.slackMention.trim())
     .filter(Boolean);
+
+  return mergeMentions(directoryMentions, legacyMentions);
 }
 
 function resolveLineMentionTriggerMentions(
@@ -216,7 +224,13 @@ function resolveLineMentionTriggerMentions(
     return [];
   }
 
-  return trigger.mappings
+  const directoryMentions = (runtimeConfig.mentionDirectory?.identities ?? [])
+    .filter((item) => item.enabled && item.slackMention)
+    .filter((item) => (item.lineUserIds ?? []).some((id) => mentionedSet.has(String(id).trim())))
+    .map((item) => item.slackMention.trim())
+    .filter(Boolean);
+
+  const legacyMentions = trigger.mappings
     .filter((mapping) => mapping.enabled && mapping.lineUserId && mapping.slackMention)
     .filter((mapping) => {
       const channelOk = !mapping.lineChannelId || mapping.lineChannelId === 'default';
@@ -224,6 +238,8 @@ function resolveLineMentionTriggerMentions(
     })
     .map((mapping) => mapping.slackMention.trim())
     .filter(Boolean);
+
+  return mergeMentions(directoryMentions, legacyMentions);
 }
 
 function getTriggerReason(ruleMatched: boolean, mentionMatched: boolean): TriggerReason {

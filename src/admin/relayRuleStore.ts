@@ -4,10 +4,12 @@ import crypto from 'node:crypto';
 import type {
   DiscordMentionMapping,
   DiscordMentionTriggerConfig,
+  MentionDirectoryConfig,
   DiscordRelayRule,
   LineMentionMapping,
   LineMentionTriggerConfig,
   LineRelayRule,
+  SlackMentionIdentity,
 } from '../types.js';
 
 export type RelayRuleImportMode = 'replace' | 'merge';
@@ -21,6 +23,7 @@ export type RelayRuleExportData = {
   globalExcludedLineSpeakerIds: string[];
   discordMentionTrigger: DiscordMentionTriggerConfig;
   lineMentionTrigger: LineMentionTriggerConfig;
+  mentionDirectory: MentionDirectoryConfig;
 };
 
 type RelayRuleStoreData = {
@@ -30,6 +33,7 @@ type RelayRuleStoreData = {
   globalExcludedLineSpeakerIds: string[];
   discordMentionTrigger: DiscordMentionTriggerConfig;
   lineMentionTrigger: LineMentionTriggerConfig;
+  mentionDirectory: MentionDirectoryConfig;
 };
 
 const DATA_DIR = path.join(process.cwd(), 'data');
@@ -99,6 +103,41 @@ function normalizeLineMentionTrigger(value: unknown): LineMentionTriggerConfig {
   };
 }
 
+function normalizeSlackMentionIdentity(value: unknown): SlackMentionIdentity | null {
+  const raw = value as Partial<SlackMentionIdentity> | null;
+  if (!raw || !raw.slackMention) {
+    return null;
+  }
+
+  const discordUserIds = Array.isArray(raw.discordUserIds)
+    ? raw.discordUserIds.map((item) => String(item).trim()).filter(Boolean)
+    : [];
+
+  const lineUserIds = Array.isArray(raw.lineUserIds)
+    ? raw.lineUserIds.map((item) => String(item).trim()).filter(Boolean)
+    : [];
+
+  return {
+    id: raw.id ? String(raw.id) : crypto.randomUUID(),
+    enabled: Boolean(raw.enabled ?? true),
+    label: String(raw.label ?? raw.slackMention).trim(),
+    slackMention: String(raw.slackMention).trim(),
+    discordUserIds,
+    lineUserIds,
+  };
+}
+
+function normalizeMentionDirectory(value: unknown): MentionDirectoryConfig {
+  const raw = value as Partial<MentionDirectoryConfig> | null;
+  const identities = Array.isArray(raw?.identities)
+    ? raw.identities
+      .map((item) => normalizeSlackMentionIdentity(item))
+      .filter(Boolean) as SlackMentionIdentity[]
+    : [];
+
+  return { identities };
+}
+
 function normalizeDiscordRuleForImport(value: unknown, preserveId: boolean): DiscordRelayRule | null {
   const raw = value as Partial<DiscordRelayRule> | null;
   if (!raw || !raw.name || !raw.sourceGuildId || !raw.targetSlackChannel) {
@@ -155,6 +194,9 @@ async function ensureStoreFile(): Promise<void> {
         allowedGroupIds: [],
         excludedGroupIds: [],
         mappings: [],
+      },
+      mentionDirectory: {
+        identities: [],
       },
     };
     await fs.writeFile(DATA_FILE, JSON.stringify(initialData, null, 2), 'utf8');
@@ -227,6 +269,7 @@ async function readStore(): Promise<RelayRuleStoreData> {
     globalExcludedLineSpeakerIds,
     discordMentionTrigger: normalizeDiscordMentionTrigger(parsed.discordMentionTrigger),
     lineMentionTrigger: normalizeLineMentionTrigger(parsed.lineMentionTrigger),
+    mentionDirectory: normalizeMentionDirectory(parsed.mentionDirectory),
   };
 }
 
@@ -245,6 +288,7 @@ export async function getRelaySettings(): Promise<{
   globalExcludedLineSpeakerIds: string[];
   discordMentionTrigger: DiscordMentionTriggerConfig;
   lineMentionTrigger: LineMentionTriggerConfig;
+  mentionDirectory: MentionDirectoryConfig;
 }> {
   const store = await readStore();
   return {
@@ -252,6 +296,7 @@ export async function getRelaySettings(): Promise<{
     globalExcludedLineSpeakerIds: store.globalExcludedLineSpeakerIds,
     discordMentionTrigger: store.discordMentionTrigger,
     lineMentionTrigger: store.lineMentionTrigger,
+    mentionDirectory: store.mentionDirectory,
   };
 }
 
@@ -265,11 +310,13 @@ export async function updateRelaySettings(patch: {
   globalExcludedLineSpeakerIds?: string[];
   discordMentionTrigger?: Partial<DiscordMentionTriggerConfig>;
   lineMentionTrigger?: Partial<LineMentionTriggerConfig>;
+  mentionDirectory?: Partial<MentionDirectoryConfig>;
 }): Promise<{
   globalExcludedAuthorIds: string[];
   globalExcludedLineSpeakerIds: string[];
   discordMentionTrigger: DiscordMentionTriggerConfig;
   lineMentionTrigger: LineMentionTriggerConfig;
+  mentionDirectory: MentionDirectoryConfig;
 }> {
   const store = await readStore();
 
@@ -301,6 +348,14 @@ export async function updateRelaySettings(patch: {
     store.lineMentionTrigger = normalizeLineMentionTrigger(next);
   }
 
+  if (patch.mentionDirectory) {
+    const next = {
+      ...store.mentionDirectory,
+      ...patch.mentionDirectory,
+    };
+    store.mentionDirectory = normalizeMentionDirectory(next);
+  }
+
   await writeStore(store);
 
   return {
@@ -308,6 +363,7 @@ export async function updateRelaySettings(patch: {
     globalExcludedLineSpeakerIds: store.globalExcludedLineSpeakerIds,
     discordMentionTrigger: store.discordMentionTrigger,
     lineMentionTrigger: store.lineMentionTrigger,
+    mentionDirectory: store.mentionDirectory,
   };
 }
 
@@ -322,6 +378,7 @@ export async function exportRelayRules(): Promise<RelayRuleExportData> {
     globalExcludedLineSpeakerIds: store.globalExcludedLineSpeakerIds,
     discordMentionTrigger: store.discordMentionTrigger,
     lineMentionTrigger: store.lineMentionTrigger,
+    mentionDirectory: store.mentionDirectory,
   };
 }
 
@@ -335,6 +392,7 @@ export async function importRelayRules(
   globalExcludedLineSpeakerIds: number;
   discordMentionMappings: number;
   lineMentionMappings: number;
+  mentionDirectoryIdentities: number;
 }> {
   const raw = payload as Partial<RelayRuleStoreData> | null;
   if (!raw || !Array.isArray(raw.discordRules) || !Array.isArray(raw.lineRules)) {
@@ -353,6 +411,7 @@ export async function importRelayRules(
   const globalExcludedLineSpeakerIds = normalizeStringArray(raw.globalExcludedLineSpeakerIds);
   const discordMentionTrigger = normalizeDiscordMentionTrigger(raw.discordMentionTrigger);
   const lineMentionTrigger = normalizeLineMentionTrigger(raw.lineMentionTrigger);
+  const mentionDirectory = normalizeMentionDirectory(raw.mentionDirectory);
   const store = mode === 'merge'
     ? await readStore()
     : {
@@ -362,6 +421,7 @@ export async function importRelayRules(
       globalExcludedLineSpeakerIds: [],
       discordMentionTrigger: { enabled: false, allowedGuildIds: [], mappings: [] },
       lineMentionTrigger: { enabled: false, allowedGroupIds: [], excludedGroupIds: [], mappings: [] },
+      mentionDirectory: { identities: [] },
     };
 
   store.discordRules = store.discordRules.concat(discordRules as DiscordRelayRule[]);
@@ -394,6 +454,14 @@ export async function importRelayRules(
     store.lineMentionTrigger = lineMentionTrigger;
   }
 
+  if (mode === 'merge') {
+    store.mentionDirectory = normalizeMentionDirectory({
+      identities: store.mentionDirectory.identities.concat(mentionDirectory.identities),
+    });
+  } else {
+    store.mentionDirectory = mentionDirectory;
+  }
+
   await writeStore(store);
 
   return {
@@ -403,6 +471,7 @@ export async function importRelayRules(
     globalExcludedLineSpeakerIds: globalExcludedLineSpeakerIds.length,
     discordMentionMappings: discordMentionTrigger.mappings.length,
     lineMentionMappings: lineMentionTrigger.mappings.length,
+    mentionDirectoryIdentities: mentionDirectory.identities.length,
   };
 }
 
@@ -431,11 +500,13 @@ export async function getLineRelayRuntimeConfig(): Promise<{
 export async function getMentionTriggerRuntimeConfig(): Promise<{
   discordMentionTrigger: DiscordMentionTriggerConfig;
   lineMentionTrigger: LineMentionTriggerConfig;
+  mentionDirectory: MentionDirectoryConfig;
 }> {
   const store = await readStore();
   return {
     discordMentionTrigger: store.discordMentionTrigger,
     lineMentionTrigger: store.lineMentionTrigger,
+    mentionDirectory: store.mentionDirectory,
   };
 }
 

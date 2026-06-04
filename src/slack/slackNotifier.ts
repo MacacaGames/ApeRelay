@@ -21,6 +21,10 @@ function formatPlatformLabel(platform: UnifiedMessage['platform']): string {
   return '🔗 Webhook';
 }
 
+function buildMessageBoundaryTag(msg: UnifiedMessage): string {
+  return `${formatTimestamp(msg.timestamp)} | ${msg.platform} | ${msg.senderName}`;
+}
+
 function buildSlackText(msg: UnifiedMessage, mentionText: string, triggerReason: string): string {
   const sourceLabel =
     msg.platform === 'LINE'
@@ -31,8 +35,11 @@ function buildSlackText(msg: UnifiedMessage, mentionText: string, triggerReason:
         ? '頻道'
         : 'Webhook';
 
+  const boundaryTag = buildMessageBoundaryTag(msg);
+
   const lines: string[] = [
-    '【外部訊息通知】',
+    '━━━━━━━━━━━━━━━━━━━━━━━━',
+    `【外部訊息通知｜${boundaryTag}】`,
     '',
     `平台：${formatPlatformLabel(msg.platform)}`,
     `來源：${sourceLabel}`,
@@ -59,7 +66,7 @@ function buildSlackText(msg: UnifiedMessage, mentionText: string, triggerReason:
     lines.push(`來源連結：${msg.sourceUrl}`);
   }
 
-  lines.push('', '內容：', msg.content, '', '狀態：未處理');
+  lines.push('', '內容：', msg.content, '', '狀態：未處理', '【本則訊息結束】', '━━━━━━━━━━━━━━━━━━━━━━━━');
 
   return lines.join('\n');
 }
@@ -109,10 +116,21 @@ function buildSlackBlocks(msg: UnifiedMessage, mentionText: string, triggerReaso
   fields.push(mrkdwnField('發訊者', msg.senderName));
   fields.push(mrkdwnField('時間', formatTimestamp(msg.timestamp)));
   fields.push(mrkdwnField('觸發', triggerReason));
+  const boundaryTag = truncateSlackText(buildMessageBoundaryTag(msg), 140);
 
   const blocks: Array<Record<string, unknown>> = [];
 
   blocks.push(
+    {
+      type: 'section',
+      text: {
+        type: 'mrkdwn',
+        text: `:rotating_light: *外部訊息通知*\n\`${boundaryTag}\``,
+      },
+    },
+    {
+      type: 'divider',
+    },
     {
       type: 'header',
       text: {
@@ -166,11 +184,14 @@ function buildSlackBlocks(msg: UnifiedMessage, mentionText: string, triggerReaso
 
   blocks.push(
     {
+      type: 'divider',
+    },
+    {
       type: 'context',
       elements: [
         {
           type: 'mrkdwn',
-          text: '*狀態*：`未處理`',
+          text: `*狀態*：\`未處理\`  |  *分界*：\`本則訊息結束\``,
         },
       ],
     },

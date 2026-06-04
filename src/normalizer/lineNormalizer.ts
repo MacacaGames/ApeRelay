@@ -25,6 +25,13 @@ function getSenderId(source: LineSource): string {
   return 'unknown';
 }
 
+function getLineSourceUrl(source: LineSource): string {
+  if (source.type === 'group' || source.type === 'room' || source.type === 'user') {
+    return 'line://nv/chat';
+  }
+  return '';
+}
+
 function getMessageContent(event: WebhookEvent): string | null {
   if (event.type !== 'message') {
     return null;
@@ -98,6 +105,7 @@ export function normalizeLineEvent(
     senderName: senderName ?? getSenderId(event.source),
     content,
     timestamp,
+    sourceUrl: getLineSourceUrl(event.source),
     mentionedExternalUserIds: getMentionedUserIds(event),
     raw: event,
   };

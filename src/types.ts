@@ -42,6 +42,19 @@ export interface LineMentionTriggerConfig {
   mappings: LineMentionMapping[];
 }
 
+export interface SlackMentionIdentity {
+  id: string;
+  enabled: boolean;
+  label: string;
+  slackMention: string;
+  discordUserIds: string[];
+  lineUserIds: string[];
+}
+
+export interface MentionDirectoryConfig {
+  identities: SlackMentionIdentity[];
+}
+
 export interface DiscordRelayRule {
   id: string;
   name: string;
