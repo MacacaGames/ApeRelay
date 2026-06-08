@@ -1,5 +1,5 @@
 import type { MessageEvent, WebhookEvent } from '@line/bot-sdk';
-import type { UnifiedMessage } from '../types.js';
+import type { MentionSpan, UnifiedMessage } from '../types.js';
 
 type LineSourceType = 'group' | 'dm';
 type LineSource = WebhookEvent['source'];
@@ -83,6 +83,48 @@ function getMentionedUserIds(event: WebhookEvent): string[] {
     .filter(Boolean);
 }
 
+function getMentionSpans(event: WebhookEvent): MentionSpan[] {
+  if (event.type !== 'message') {
+    return [];
+  }
+
+  const msgEvent = event as MessageEvent;
+  if (msgEvent.message.type !== 'text') {
+    return [];
+  }
+
+  const message = msgEvent.message as {
+    mention?: {
+      mentionees?: Array<{
+        type?: string;
+        userId?: string;
+        index?: number;
+        length?: number;
+      }>;
+    };
+  };
+
+  const mentionees = message.mention?.mentionees;
+  if (!Array.isArray(mentionees)) {
+    return [];
+  }
+
+  return mentionees
+    .filter(
+      (item) =>
+        item.type === 'user' &&
+        typeof item.userId === 'string' &&
+        typeof item.index === 'number' &&
+        typeof item.length === 'number',
+    )
+    .map((item) => ({
+      index: item.index as number,
+      length: item.length as number,
+      externalUserId: String(item.userId).trim(),
+    }))
+    .filter((span) => Boolean(span.externalUserId));
+}
+
 export function normalizeLineEvent(
   event: WebhookEvent,
   senderName?: string,
@@ -107,6 +149,7 @@ export function normalizeLineEvent(
     timestamp,
     sourceUrl: getLineSourceUrl(event.source),
     mentionedExternalUserIds: getMentionedUserIds(event),
+    mentionSpans: getMentionSpans(event),
     raw: event,
   };
 }

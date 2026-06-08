@@ -2,8 +2,10 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import type {
+  DiscordGlobalExcludedAuthorProfile,
   DiscordMentionMapping,
   DiscordMentionTriggerConfig,
+  LineGlobalExcludedSpeakerProfile,
   MentionDirectoryConfig,
   DiscordRelayRule,
   LineMentionMapping,
@@ -20,8 +22,10 @@ export type RelayRuleExportData = {
   discordRules: DiscordRelayRule[];
   lineRules: LineRelayRule[];
   globalExcludedAuthorIds: string[];
+  globalExcludedAuthorProfiles: DiscordGlobalExcludedAuthorProfile[];
   globalExcludedAuthorRoleIds: string[];
   globalExcludedLineSpeakerIds: string[];
+  globalExcludedLineSpeakerProfiles: LineGlobalExcludedSpeakerProfile[];
   discordMentionTrigger: DiscordMentionTriggerConfig;
   lineMentionTrigger: LineMentionTriggerConfig;
   mentionDirectory: MentionDirectoryConfig;
@@ -31,8 +35,10 @@ type RelayRuleStoreData = {
   discordRules: DiscordRelayRule[];
   lineRules: LineRelayRule[];
   globalExcludedAuthorIds: string[];
+  globalExcludedAuthorProfiles: DiscordGlobalExcludedAuthorProfile[];
   globalExcludedAuthorRoleIds: string[];
   globalExcludedLineSpeakerIds: string[];
+  globalExcludedLineSpeakerProfiles: LineGlobalExcludedSpeakerProfile[];
   discordMentionTrigger: DiscordMentionTriggerConfig;
   lineMentionTrigger: LineMentionTriggerConfig;
   mentionDirectory: MentionDirectoryConfig;
@@ -140,6 +146,56 @@ function normalizeMentionDirectory(value: unknown): MentionDirectoryConfig {
   return { identities };
 }
 
+function normalizeDiscordGlobalExcludedAuthorProfiles(value: unknown): DiscordGlobalExcludedAuthorProfile[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  const dedup = new Map<string, DiscordGlobalExcludedAuthorProfile>();
+  for (const item of value) {
+    const raw = item as Partial<DiscordGlobalExcludedAuthorProfile> | null;
+    const discordUserId = String(raw?.discordUserId ?? '').trim();
+    if (!discordUserId) {
+      continue;
+    }
+
+    const note = String(raw?.note ?? '').trim();
+    const slackMention = String(raw?.slackMention ?? '').trim();
+    dedup.set(discordUserId, {
+      discordUserId,
+      note,
+      slackMention: slackMention || undefined,
+    });
+  }
+
+  return Array.from(dedup.values());
+}
+
+function normalizeLineGlobalExcludedSpeakerProfiles(value: unknown): LineGlobalExcludedSpeakerProfile[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  const dedup = new Map<string, LineGlobalExcludedSpeakerProfile>();
+  for (const item of value) {
+    const raw = item as Partial<LineGlobalExcludedSpeakerProfile> | null;
+    const lineUserId = String(raw?.lineUserId ?? '').trim();
+    if (!lineUserId) {
+      continue;
+    }
+
+    const note = String(raw?.note ?? '').trim();
+    const slackMention = String(raw?.slackMention ?? '').trim();
+    dedup.set(lineUserId, {
+      lineUserId,
+      note,
+      slackMention: slackMention || undefined,
+    });
+  }
+
+  return Array.from(dedup.values());
+}
+
 function normalizeDiscordRuleForImport(value: unknown, preserveId: boolean): DiscordRelayRule | null {
   const raw = value as Partial<DiscordRelayRule> | null;
   if (!raw || !raw.name || !raw.sourceGuildId || !raw.targetSlackChannel) {
@@ -186,8 +242,10 @@ async function ensureStoreFile(): Promise<void> {
       discordRules: [],
       lineRules: [],
       globalExcludedAuthorIds: [],
+      globalExcludedAuthorProfiles: [],
       globalExcludedAuthorRoleIds: [],
       globalExcludedLineSpeakerIds: [],
+      globalExcludedLineSpeakerProfiles: [],
       discordMentionTrigger: {
         enabled: false,
         allowedGuildIds: [],
@@ -244,6 +302,8 @@ async function readStore(): Promise<RelayRuleStoreData> {
     ? parsed.globalExcludedAuthorIds.map((value) => String(value).trim()).filter(Boolean)
     : [];
 
+  const globalExcludedAuthorProfiles = normalizeDiscordGlobalExcludedAuthorProfiles(parsed.globalExcludedAuthorProfiles);
+
   const globalExcludedAuthorRoleIds = Array.isArray(parsed.globalExcludedAuthorRoleIds)
     ? parsed.globalExcludedAuthorRoleIds.map((value) => String(value).trim()).filter(Boolean)
     : [];
@@ -251,6 +311,8 @@ async function readStore(): Promise<RelayRuleStoreData> {
   const globalExcludedLineSpeakerIds = Array.isArray(parsed.globalExcludedLineSpeakerIds)
     ? parsed.globalExcludedLineSpeakerIds.map((value) => String(value).trim()).filter(Boolean)
     : [];
+
+  const globalExcludedLineSpeakerProfiles = normalizeLineGlobalExcludedSpeakerProfiles(parsed.globalExcludedLineSpeakerProfiles);
 
   const lineRules: LineRelayRule[] = rawLineRules.map((item) => {
     const raw = item as LineRelayRule & { defaultMentions?: string };
@@ -277,8 +339,10 @@ async function readStore(): Promise<RelayRuleStoreData> {
     discordRules,
     lineRules,
     globalExcludedAuthorIds,
+    globalExcludedAuthorProfiles,
     globalExcludedAuthorRoleIds,
     globalExcludedLineSpeakerIds,
+    globalExcludedLineSpeakerProfiles,
     discordMentionTrigger: normalizeDiscordMentionTrigger(parsed.discordMentionTrigger),
     lineMentionTrigger: normalizeLineMentionTrigger(parsed.lineMentionTrigger),
     mentionDirectory: normalizeMentionDirectory(parsed.mentionDirectory),
@@ -297,8 +361,10 @@ export async function getDiscordRelayRules(): Promise<DiscordRelayRule[]> {
 
 export async function getRelaySettings(): Promise<{
   globalExcludedAuthorIds: string[];
+  globalExcludedAuthorProfiles: DiscordGlobalExcludedAuthorProfile[];
   globalExcludedAuthorRoleIds: string[];
   globalExcludedLineSpeakerIds: string[];
+  globalExcludedLineSpeakerProfiles: LineGlobalExcludedSpeakerProfile[];
   discordMentionTrigger: DiscordMentionTriggerConfig;
   lineMentionTrigger: LineMentionTriggerConfig;
   mentionDirectory: MentionDirectoryConfig;
@@ -306,8 +372,10 @@ export async function getRelaySettings(): Promise<{
   const store = await readStore();
   return {
     globalExcludedAuthorIds: store.globalExcludedAuthorIds,
+    globalExcludedAuthorProfiles: store.globalExcludedAuthorProfiles,
     globalExcludedAuthorRoleIds: store.globalExcludedAuthorRoleIds,
     globalExcludedLineSpeakerIds: store.globalExcludedLineSpeakerIds,
+    globalExcludedLineSpeakerProfiles: store.globalExcludedLineSpeakerProfiles,
     discordMentionTrigger: store.discordMentionTrigger,
     lineMentionTrigger: store.lineMentionTrigger,
     mentionDirectory: store.mentionDirectory,
@@ -321,15 +389,19 @@ export async function getLineRelayRules(): Promise<LineRelayRule[]> {
 
 export async function updateRelaySettings(patch: {
   globalExcludedAuthorIds?: string[];
+  globalExcludedAuthorProfiles?: DiscordGlobalExcludedAuthorProfile[];
   globalExcludedAuthorRoleIds?: string[];
   globalExcludedLineSpeakerIds?: string[];
+  globalExcludedLineSpeakerProfiles?: LineGlobalExcludedSpeakerProfile[];
   discordMentionTrigger?: Partial<DiscordMentionTriggerConfig>;
   lineMentionTrigger?: Partial<LineMentionTriggerConfig>;
   mentionDirectory?: Partial<MentionDirectoryConfig>;
 }): Promise<{
   globalExcludedAuthorIds: string[];
+  globalExcludedAuthorProfiles: DiscordGlobalExcludedAuthorProfile[];
   globalExcludedAuthorRoleIds: string[];
   globalExcludedLineSpeakerIds: string[];
+  globalExcludedLineSpeakerProfiles: LineGlobalExcludedSpeakerProfile[];
   discordMentionTrigger: DiscordMentionTriggerConfig;
   lineMentionTrigger: LineMentionTriggerConfig;
   mentionDirectory: MentionDirectoryConfig;
@@ -342,6 +414,10 @@ export async function updateRelaySettings(patch: {
       .filter(Boolean);
   }
 
+  if (Array.isArray(patch.globalExcludedAuthorProfiles)) {
+    store.globalExcludedAuthorProfiles = normalizeDiscordGlobalExcludedAuthorProfiles(patch.globalExcludedAuthorProfiles);
+  }
+
   if (Array.isArray(patch.globalExcludedAuthorRoleIds)) {
     store.globalExcludedAuthorRoleIds = patch.globalExcludedAuthorRoleIds
       .map((value) => String(value).trim())
@@ -352,6 +428,10 @@ export async function updateRelaySettings(patch: {
     store.globalExcludedLineSpeakerIds = patch.globalExcludedLineSpeakerIds
       .map((value) => String(value).trim())
       .filter(Boolean);
+  }
+
+  if (Array.isArray(patch.globalExcludedLineSpeakerProfiles)) {
+    store.globalExcludedLineSpeakerProfiles = normalizeLineGlobalExcludedSpeakerProfiles(patch.globalExcludedLineSpeakerProfiles);
   }
 
   if (patch.discordMentionTrigger) {
@@ -382,8 +462,10 @@ export async function updateRelaySettings(patch: {
 
   return {
     globalExcludedAuthorIds: store.globalExcludedAuthorIds,
+    globalExcludedAuthorProfiles: store.globalExcludedAuthorProfiles,
     globalExcludedAuthorRoleIds: store.globalExcludedAuthorRoleIds,
     globalExcludedLineSpeakerIds: store.globalExcludedLineSpeakerIds,
+    globalExcludedLineSpeakerProfiles: store.globalExcludedLineSpeakerProfiles,
     discordMentionTrigger: store.discordMentionTrigger,
     lineMentionTrigger: store.lineMentionTrigger,
     mentionDirectory: store.mentionDirectory,
@@ -398,8 +480,10 @@ export async function exportRelayRules(): Promise<RelayRuleExportData> {
     discordRules: store.discordRules,
     lineRules: store.lineRules,
     globalExcludedAuthorIds: store.globalExcludedAuthorIds,
+    globalExcludedAuthorProfiles: store.globalExcludedAuthorProfiles,
     globalExcludedAuthorRoleIds: store.globalExcludedAuthorRoleIds,
     globalExcludedLineSpeakerIds: store.globalExcludedLineSpeakerIds,
+    globalExcludedLineSpeakerProfiles: store.globalExcludedLineSpeakerProfiles,
     discordMentionTrigger: store.discordMentionTrigger,
     lineMentionTrigger: store.lineMentionTrigger,
     mentionDirectory: store.mentionDirectory,
@@ -413,8 +497,10 @@ export async function importRelayRules(
   discordRules: number;
   lineRules: number;
   globalExcludedAuthorIds: number;
+  globalExcludedAuthorProfiles: number;
   globalExcludedAuthorRoleIds: number;
   globalExcludedLineSpeakerIds: number;
+  globalExcludedLineSpeakerProfiles: number;
   discordMentionMappings: number;
   lineMentionMappings: number;
   mentionDirectoryIdentities: number;
@@ -433,8 +519,10 @@ export async function importRelayRules(
   }
 
   const globalExcludedAuthorIds = normalizeStringArray(raw.globalExcludedAuthorIds);
+  const globalExcludedAuthorProfiles = normalizeDiscordGlobalExcludedAuthorProfiles(raw.globalExcludedAuthorProfiles);
   const globalExcludedAuthorRoleIds = normalizeStringArray(raw.globalExcludedAuthorRoleIds);
   const globalExcludedLineSpeakerIds = normalizeStringArray(raw.globalExcludedLineSpeakerIds);
+  const globalExcludedLineSpeakerProfiles = normalizeLineGlobalExcludedSpeakerProfiles(raw.globalExcludedLineSpeakerProfiles);
   const discordMentionTrigger = normalizeDiscordMentionTrigger(raw.discordMentionTrigger);
   const lineMentionTrigger = normalizeLineMentionTrigger(raw.lineMentionTrigger);
   const mentionDirectory = normalizeMentionDirectory(raw.mentionDirectory);
@@ -444,8 +532,10 @@ export async function importRelayRules(
       discordRules: [],
       lineRules: [],
       globalExcludedAuthorIds: [],
+      globalExcludedAuthorProfiles: [],
       globalExcludedAuthorRoleIds: [],
       globalExcludedLineSpeakerIds: [],
+      globalExcludedLineSpeakerProfiles: [],
       discordMentionTrigger: { enabled: false, allowedGuildIds: [], mappings: [] },
       lineMentionTrigger: { enabled: false, allowedGroupIds: [], excludedGroupIds: [], mappings: [] },
       mentionDirectory: { identities: [] },
@@ -458,6 +548,11 @@ export async function importRelayRules(
       ? store.globalExcludedAuthorIds.concat(globalExcludedAuthorIds)
       : globalExcludedAuthorIds,
   ));
+  store.globalExcludedAuthorProfiles = normalizeDiscordGlobalExcludedAuthorProfiles(
+    mode === 'merge'
+      ? store.globalExcludedAuthorProfiles.concat(globalExcludedAuthorProfiles)
+      : globalExcludedAuthorProfiles,
+  );
   store.globalExcludedAuthorRoleIds = Array.from(new Set(
     mode === 'merge'
       ? store.globalExcludedAuthorRoleIds.concat(globalExcludedAuthorRoleIds)
@@ -468,6 +563,11 @@ export async function importRelayRules(
       ? store.globalExcludedLineSpeakerIds.concat(globalExcludedLineSpeakerIds)
       : globalExcludedLineSpeakerIds,
   ));
+  store.globalExcludedLineSpeakerProfiles = normalizeLineGlobalExcludedSpeakerProfiles(
+    mode === 'merge'
+      ? store.globalExcludedLineSpeakerProfiles.concat(globalExcludedLineSpeakerProfiles)
+      : globalExcludedLineSpeakerProfiles,
+  );
 
   if (mode === 'merge') {
     store.discordMentionTrigger = normalizeDiscordMentionTrigger({
@@ -500,8 +600,10 @@ export async function importRelayRules(
     discordRules: discordRules.length,
     lineRules: lineRules.length,
     globalExcludedAuthorIds: globalExcludedAuthorIds.length,
+    globalExcludedAuthorProfiles: globalExcludedAuthorProfiles.length,
     globalExcludedAuthorRoleIds: globalExcludedAuthorRoleIds.length,
     globalExcludedLineSpeakerIds: globalExcludedLineSpeakerIds.length,
+    globalExcludedLineSpeakerProfiles: globalExcludedLineSpeakerProfiles.length,
     discordMentionMappings: discordMentionTrigger.mappings.length,
     lineMentionMappings: lineMentionTrigger.mappings.length,
     mentionDirectoryIdentities: mentionDirectory.identities.length,

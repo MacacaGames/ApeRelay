@@ -1,0 +1,12 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "ape-relay",
+      "runtimeExecutable": "/Users/pm01/.nvm/versions/node/v26.3.0/bin/node",
+      "runtimeArgs": ["dist/index.js"],
+      "port": 3000,
+      "autoPort": false
+    }
+  ]
+}

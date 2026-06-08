@@ -9,7 +9,14 @@ export interface UnifiedMessage {
   sourceUrl?: string;
   attachmentUrls?: string[];
   mentionedExternalUserIds?: string[];
+  mentionSpans?: MentionSpan[];
   raw?: unknown;
+}
+
+export interface MentionSpan {
+  index: number;
+  length: number;
+  externalUserId: string;
 }
 
 export interface DiscordMentionMapping {
@@ -53,6 +60,18 @@ export interface SlackMentionIdentity {
 
 export interface MentionDirectoryConfig {
   identities: SlackMentionIdentity[];
+}
+
+export interface DiscordGlobalExcludedAuthorProfile {
+  discordUserId: string;
+  note: string;
+  slackMention?: string;
+}
+
+export interface LineGlobalExcludedSpeakerProfile {
+  lineUserId: string;
+  note: string;
+  slackMention?: string;
 }
 
 export interface DiscordRelayRule {

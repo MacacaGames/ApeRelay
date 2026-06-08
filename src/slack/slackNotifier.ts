@@ -1,19 +1,8 @@
 import { fetch } from 'undici';
 import { config } from '../config.js';
 import { logger } from '../logger.js';
-import type { UnifiedMessage } from '../types.js';
-
-function formatTimestamp(date: Date): string {
-  return date.toLocaleString('zh-TW', {
-    timeZone: config.timezone,
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-    hour12: false,
-  });
-}
+import { getMentionTriggerRuntimeConfig } from '../admin/relayRuleStore.js';
+import type { SlackMentionIdentity, UnifiedMessage } from '../types.js';
 
 function formatPlatformLabel(platform: UnifiedMessage['platform']): string {
   if (platform === 'LINE') return '🟢 LINE';
@@ -21,54 +10,18 @@ function formatPlatformLabel(platform: UnifiedMessage['platform']): string {
   return '🔗 Webhook';
 }
 
-function buildMessageBoundaryTag(msg: UnifiedMessage): string {
-  return `${formatTimestamp(msg.timestamp)} | ${msg.platform} | ${msg.senderName}`;
-}
+// 【平台】來源：頻道
+function buildSourceLine(msg: UnifiedMessage): string {
+  const platform = formatPlatformLabel(msg.platform);
 
-function buildSlackText(msg: UnifiedMessage, mentionText: string, triggerReason: string): string {
-  const sourceLabel =
-    msg.platform === 'LINE'
-      ? msg.sourceType === 'group'
-        ? '群組'
-        : '一對一'
-      : msg.platform === 'Discord'
-        ? '頻道'
-        : 'Webhook';
-
-  const boundaryTag = buildMessageBoundaryTag(msg);
-
-  const lines: string[] = [
-    '━━━━━━━━━━━━━━━━━━━━━━━━',
-    `【外部訊息通知｜${boundaryTag}】`,
-    '',
-    `平台：${formatPlatformLabel(msg.platform)}`,
-    `來源：${sourceLabel}`,
-  ];
-
-  if (msg.platform === 'LINE') {
-    lines.push(`群組：${msg.sourceName}`);
-  } else if (msg.platform === 'Discord') {
+  if (msg.platform === 'Discord') {
     const [serverName, channelName] = msg.sourceName.split('::');
-    lines.push(`Server：${serverName ?? msg.sourceName}`);
-    if (channelName) lines.push(`Channel：#${channelName}`);
-  } else {
-    lines.push(`來源名稱：${msg.sourceName}`);
+    const server = serverName ?? msg.sourceName;
+    const tail = channelName ? `${server}：#${channelName}` : server;
+    return `【${platform}】${tail}`;
   }
 
-  lines.push(
-    `發訊者：${msg.senderName}`,
-    `時間：${formatTimestamp(msg.timestamp)}`,
-    `觸發：${triggerReason}`,
-    `通知對象：${mentionText || '無'}`,
-  );
-
-  if (msg.sourceUrl) {
-    lines.push(`來源連結：${msg.sourceUrl}`);
-  }
-
-  lines.push('', '內容：', msg.content, '', '狀態：未處理', '【本則訊息結束】', '━━━━━━━━━━━━━━━━━━━━━━━━');
-
-  return lines.join('\n');
+  return `【${platform}】${msg.sourceName}`;
 }
 
 function truncateSlackText(value: string, maxLength: number): string {
@@ -79,125 +32,89 @@ function truncateSlackText(value: string, maxLength: number): string {
   return `${value.slice(0, Math.max(0, maxLength - 1))}…`;
 }
 
-function mrkdwnField(label: string, value: string): Record<string, string> {
-  return {
-    type: 'mrkdwn',
-    text: `*${label}*\n${truncateSlackText(value || '-', 900)}`,
-  };
+// externalUserId -> Slack mention, built from the Slack 身分主檔 (mention directory).
+function buildMentionResolver(identities: SlackMentionIdentity[]): Map<string, string> {
+  const map = new Map<string, string>();
+  for (const identity of identities) {
+    if (!identity.enabled) {
+      continue;
+    }
+    const mention = String(identity.slackMention || '').trim();
+    if (!mention) {
+      continue;
+    }
+    for (const id of [...(identity.discordUserIds ?? []), ...(identity.lineUserIds ?? [])]) {
+      const key = String(id).trim();
+      if (key && !map.has(key)) {
+        map.set(key, mention);
+      }
+    }
+  }
+  return map;
 }
 
-function buildSlackBlocks(msg: UnifiedMessage, mentionText: string, triggerReason: string) {
-  const sourceLabel =
-    msg.platform === 'LINE'
-      ? msg.sourceType === 'group'
-        ? '群組'
-        : '一對一'
-      : msg.platform === 'Discord'
-        ? '頻道'
-        : 'Webhook';
+// Tag mentioned people inside the message body with （<@Slack>）, resolved via
+// the Slack 身分主檔. Discord <@id> tokens are replaced in place; LINE @names
+// (located via mention spans) keep their text and get the tag appended.
+function annotateContentMentions(msg: UnifiedMessage, resolver: Map<string, string>): string {
+  let content = msg.content;
+  if (resolver.size === 0) {
+    return content;
+  }
 
-  const fields = [
-    mrkdwnField('平台', formatPlatformLabel(msg.platform)),
-    mrkdwnField('來源', sourceLabel),
-  ];
-
-  if (msg.platform === 'LINE') {
-    fields.push(mrkdwnField('群組', msg.sourceName));
-  } else if (msg.platform === 'Discord') {
-    const [serverName, channelName] = msg.sourceName.split('::');
-    fields.push(mrkdwnField('Server', serverName ?? msg.sourceName));
-    if (channelName) {
-      fields.push(mrkdwnField('Channel', `#${channelName}`));
+  const spans = msg.mentionSpans;
+  if (Array.isArray(spans) && spans.length) {
+    const ordered = [...spans]
+      .filter((span) => span && typeof span.index === 'number' && typeof span.length === 'number')
+      .sort((a, b) => b.index - a.index);
+    for (const span of ordered) {
+      const mention = resolver.get(String(span.externalUserId).trim());
+      if (!mention) {
+        continue;
+      }
+      const end = span.index + span.length;
+      if (end > content.length) {
+        continue;
+      }
+      content = `${content.slice(0, end)}（${mention}）${content.slice(end)}`;
     }
-  } else {
-    fields.push(mrkdwnField('來源名稱', msg.sourceName));
   }
 
-  fields.push(mrkdwnField('發訊者', msg.senderName));
-  fields.push(mrkdwnField('時間', formatTimestamp(msg.timestamp)));
-  fields.push(mrkdwnField('觸發', triggerReason));
-  const boundaryTag = truncateSlackText(buildMessageBoundaryTag(msg), 140);
+  content = content.replace(/<@!?(\d+)>/g, (whole, id: string) => {
+    const mention = resolver.get(String(id).trim());
+    return mention ? `（${mention}）` : whole;
+  });
 
-  const blocks: Array<Record<string, unknown>> = [];
+  return content;
+}
 
-  blocks.push(
-    {
-      type: 'section',
-      text: {
-        type: 'mrkdwn',
-        text: `:rotating_light: *外部訊息通知*\n\`${boundaryTag}\``,
-      },
-    },
-    {
-      type: 'divider',
-    },
-    {
-      type: 'header',
-      text: {
-        type: 'plain_text',
-        text: '需要處理的新外部訊息',
-        emoji: false,
-      },
-    },
-    {
-      type: 'section',
-      fields,
-    },
-    {
-      type: 'divider',
-    },
-    {
-      type: 'section',
-      text: {
-        type: 'mrkdwn',
-        text: `*通知對象*\n${mentionText || '無'}`,
-      },
-    },
-    {
-      type: 'divider',
-    },
-    {
-      type: 'section',
-      text: {
-        type: 'mrkdwn',
-        text: `*內容*\n${truncateSlackText(msg.content, 2800)}`,
-      },
-    },
-  );
+function buildSlackMessageText(
+  msg: UnifiedMessage,
+  mentionText: string,
+  resolver: Map<string, string>,
+): string {
+  const annotatedContent = truncateSlackText(annotateContentMentions(msg, resolver), 2500);
 
-  if (msg.sourceUrl) {
-    blocks.push({
-      type: 'actions',
-      elements: [
-        {
-          type: 'button',
-          text: {
-            type: 'plain_text',
-            text: '開啟原始訊息',
-            emoji: false,
-          },
-          url: msg.sourceUrl,
-        },
-      ],
-    });
+  const lines: string[] = [];
+  if (mentionText) {
+    lines.push(mentionText);
   }
+  lines.push(`發訊者：${msg.senderName}`);
+  lines.push(`內容：${annotatedContent}`);
+  lines.push('');
+  lines.push(buildSourceLine(msg));
 
-  blocks.push(
-    {
-      type: 'divider',
-    },
-    {
-      type: 'context',
-      elements: [
-        {
-          type: 'mrkdwn',
-          text: `*狀態*：\`未處理\`  |  *分界*：\`本則訊息結束\``,
-        },
-      ],
-    },
-  );
+  return lines.join('\n');
+}
 
-  return blocks;
+async function loadMentionDirectoryIdentities(): Promise<SlackMentionIdentity[]> {
+  try {
+    const runtime = await getMentionTriggerRuntimeConfig();
+    return runtime.mentionDirectory?.identities ?? [];
+  } catch (err) {
+    logger.warn({ err }, 'Unable to load mention directory for Slack content annotation');
+    return [];
+  }
 }
 
 const SLACK_API_URL = 'https://slack.com/api/chat.postMessage';
@@ -238,7 +155,8 @@ export async function sendToSlack(
     .map((value) => normalizeMentionTarget(value))
     .filter(Boolean);
   const mentionText = Array.from(new Set(normalizedMentionTargets)).join(' ');
-  const fallbackText = buildSlackText(msg, mentionText, triggerReason);
+  const resolver = buildMentionResolver(await loadMentionDirectoryIdentities());
+  const messageText = buildSlackMessageText(msg, mentionText, resolver);
   const targetChannel = channel ?? config.slack.defaultChannel;
 
   const response = await fetch(SLACK_API_URL, {
@@ -249,8 +167,16 @@ export async function sendToSlack(
     },
     body: JSON.stringify({
       channel: targetChannel,
-      text: fallbackText,
-      blocks: buildSlackBlocks(msg, mentionText, triggerReason),
+      text: messageText,
+      blocks: [
+        {
+          type: 'section',
+          text: {
+            type: 'mrkdwn',
+            text: messageText,
+          },
+        },
+      ],
       mrkdwn: true,
       link_names: true,
       unfurl_links: false,
@@ -279,6 +205,7 @@ export async function sendToSlack(
       channel: targetChannel,
       mentionTargets: mentionTargets ?? [],
       normalizedMentions: normalizedMentionTargets,
+      triggerReason,
     },
     'Forwarded message to Slack',
   );

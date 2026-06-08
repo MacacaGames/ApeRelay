@@ -21,8 +21,10 @@ import { config } from '../config.js';
 import { logger } from '../logger.js';
 import { getLineRecentGroupOptions, getLineWebhookDebugState } from '../sources/lineSource.js';
 import type {
+  DiscordGlobalExcludedAuthorProfile,
   DiscordMentionMapping,
   DiscordMentionTriggerConfig,
+  LineGlobalExcludedSpeakerProfile,
   MentionDirectoryConfig,
   DiscordRelayRule,
   LineMentionMapping,
@@ -900,14 +902,18 @@ router.post('/api/admin/rules-import', async (req, res) => {
 router.put('/api/admin/settings', async (req, res) => {
   const body = req.body as {
     globalExcludedAuthorIds?: unknown;
+    globalExcludedAuthorProfiles?: unknown;
     globalExcludedAuthorRoleIds?: unknown;
     globalExcludedLineSpeakerIds?: unknown;
+    globalExcludedLineSpeakerProfiles?: unknown;
   };
 
   const patch: {
     globalExcludedAuthorIds?: string[];
+    globalExcludedAuthorProfiles?: DiscordGlobalExcludedAuthorProfile[];
     globalExcludedAuthorRoleIds?: string[];
     globalExcludedLineSpeakerIds?: string[];
+    globalExcludedLineSpeakerProfiles?: LineGlobalExcludedSpeakerProfile[];
   } = {};
 
   if (Array.isArray(body.globalExcludedAuthorIds)) {
@@ -920,6 +926,46 @@ router.put('/api/admin/settings', async (req, res) => {
     patch.globalExcludedLineSpeakerIds = body.globalExcludedLineSpeakerIds
       .map((value) => String(value).trim())
       .filter(Boolean);
+  }
+
+  if (Array.isArray(body.globalExcludedLineSpeakerProfiles)) {
+    patch.globalExcludedLineSpeakerProfiles = body.globalExcludedLineSpeakerProfiles
+      .map((item) => {
+        const raw = item as Partial<LineGlobalExcludedSpeakerProfile> | null;
+        const lineUserId = String(raw?.lineUserId ?? '').trim();
+        if (!lineUserId) {
+          return null;
+        }
+
+        const note = String(raw?.note ?? '').trim();
+        const slackMention = String(raw?.slackMention ?? '').trim();
+        return {
+          lineUserId,
+          note,
+          slackMention: slackMention || undefined,
+        };
+      })
+      .filter(Boolean) as LineGlobalExcludedSpeakerProfile[];
+  }
+
+  if (Array.isArray(body.globalExcludedAuthorProfiles)) {
+    patch.globalExcludedAuthorProfiles = body.globalExcludedAuthorProfiles
+      .map((item) => {
+        const raw = item as Partial<DiscordGlobalExcludedAuthorProfile> | null;
+        const discordUserId = String(raw?.discordUserId ?? '').trim();
+        if (!discordUserId) {
+          return null;
+        }
+
+        const note = String(raw?.note ?? '').trim();
+        const slackMention = String(raw?.slackMention ?? '').trim();
+        return {
+          discordUserId,
+          note,
+          slackMention: slackMention || undefined,
+        };
+      })
+      .filter(Boolean) as DiscordGlobalExcludedAuthorProfile[];
   }
 
   if (Array.isArray(body.globalExcludedAuthorRoleIds)) {
@@ -1295,6 +1341,45 @@ router.get('/admin', (_req, res) => {
         overflow-wrap: anywhere;
       }
 
+      .global-excluded-editor {
+        margin-top: 10px;
+        border: 1px solid var(--line);
+        border-radius: 10px;
+        background: #fcfdff;
+      }
+
+      .global-excluded-editor summary {
+        cursor: pointer;
+        padding: 10px 12px;
+        color: #334155;
+        font-weight: 600;
+      }
+
+      .global-excluded-editor-body {
+        padding: 0 12px 12px;
+      }
+
+      .global-excluded-table {
+        table-layout: fixed;
+      }
+
+      .global-excluded-table th:nth-child(1),
+      .global-excluded-table td:nth-child(1) { width: 30%; }
+      .global-excluded-table th:nth-child(4),
+      .global-excluded-table td:nth-child(4) { width: 80px; }
+
+      .global-excluded-table input,
+      .global-excluded-table select {
+        margin: 0;
+      }
+
+      .mini-label {
+        color: var(--muted);
+        font-size: 12px;
+        line-height: 1.1;
+        margin-bottom: 4px;
+      }
+
       .table-actions {
         display: grid;
         gap: 6px;
@@ -1425,6 +1510,26 @@ router.get('/admin', (_req, res) => {
           <p class="hint">會和每條 Discord 規則的排除名單 union，執行期即時生效。</p>
           <label>Discord User ID（多個用逗號分隔）</label>
           <input id="globalExcludedAuthorIds" placeholder="例如 123456789012345678, 987654321098765432" />
+          <details class="global-excluded-editor" open>
+            <summary>展開 ID 名稱備註與 Slack 連結</summary>
+            <div class="global-excluded-editor-body">
+              <p class="hint">可直接為每個 ID 填備註，或指定對應 Slack 成員。若 Mention Directory 已有映射，會自動帶入名稱。</p>
+              <div class="actions" style="margin-top:8px;">
+                <button id="syncGlobalExcludedAuthorRowsBtn" class="ghost" type="button">由 ID 欄同步展開列表</button>
+              </div>
+              <table class="global-excluded-table">
+                <thead>
+                  <tr>
+                    <th>Discord User ID</th>
+                    <th>名稱備註</th>
+                    <th>Slack Mention Trigger</th>
+                    <th>操作</th>
+                  </tr>
+                </thead>
+                <tbody id="globalExcludedAuthorRows"></tbody>
+              </table>
+            </div>
+          </details>
           <label>從近期作者加入（可多選）</label>
           <select id="globalExcludedAuthorSelect" multiple size="6"></select>
           <label>Discord Role ID（多個用逗號分隔）</label>
@@ -1505,6 +1610,26 @@ router.get('/admin', (_req, res) => {
           <p class="hint">會和每條 LINE 規則的排除名單 union，執行期即時生效。</p>
           <label>LINE User ID（多個用逗號分隔）</label>
           <input id="globalExcludedLineSpeakerIds" placeholder="例如 U123abc..., U999xyz..." />
+          <details class="global-excluded-editor" open>
+            <summary>展開 ID 名稱備註與 Slack 連結</summary>
+            <div class="global-excluded-editor-body">
+              <p class="hint">可直接為每個 ID 填備註，或指定對應 Slack 成員。若 Mention Directory 已有映射，會自動帶入名稱；指定後儲存會同步回 Slack 身分主檔。</p>
+              <div class="actions" style="margin-top:8px;">
+                <button id="syncGlobalExcludedLineSpeakerRowsBtn" class="ghost" type="button">由 ID 欄同步展開列表</button>
+              </div>
+              <table class="global-excluded-table">
+                <thead>
+                  <tr>
+                    <th>LINE User ID</th>
+                    <th>名稱備註</th>
+                    <th>Slack Mention Trigger</th>
+                    <th>操作</th>
+                  </tr>
+                </thead>
+                <tbody id="globalExcludedLineSpeakerRows"></tbody>
+              </table>
+            </div>
+          </details>
           <label>從最近發言者加入（可多選）</label>
           <select id="globalLineExcludedSpeakerSelect" multiple size="6"></select>
           <div class="actions">
@@ -1700,7 +1825,13 @@ router.get('/admin', (_req, res) => {
         loaded: { channels: 0, users: 0, usergroups: 0 },
       };
 
-      let relaySettings = { globalExcludedAuthorIds: [], globalExcludedAuthorRoleIds: [], globalExcludedLineSpeakerIds: [] };
+      let relaySettings = {
+        globalExcludedAuthorIds: [],
+        globalExcludedAuthorProfiles: [],
+        globalExcludedAuthorRoleIds: [],
+        globalExcludedLineSpeakerIds: [],
+        globalExcludedLineSpeakerProfiles: [],
+      };
       let mentionTriggerSettings = {
         discordMentionTrigger: { enabled: false, allowedGuildIds: [], mappings: [] },
         lineMentionTrigger: { enabled: false, allowedGroupIds: [], excludedGroupIds: [], mappings: [] },
@@ -1938,7 +2069,13 @@ router.get('/admin', (_req, res) => {
       async function fetchSettings() {
         const res = await fetch('/api/admin/settings');
         const json = await res.json();
-        return json.settings || { globalExcludedAuthorIds: [], globalExcludedAuthorRoleIds: [], globalExcludedLineSpeakerIds: [] };
+        return json.settings || {
+          globalExcludedAuthorIds: [],
+          globalExcludedAuthorProfiles: [],
+          globalExcludedAuthorRoleIds: [],
+          globalExcludedLineSpeakerIds: [],
+          globalExcludedLineSpeakerProfiles: [],
+        };
       }
 
       async function fetchMentionTriggerSettings() {
@@ -2026,6 +2163,121 @@ router.get('/admin', (_req, res) => {
         return json.mentionDirectory;
       }
 
+      // Push the Slack mentions assigned in the global-excluded editor back into
+      // the Slack identity master (mentionDirectory): the Discord UID is added to
+      // the identity whose slackMention matches, creating one if none exists.
+      async function syncGlobalExcludedProfilesToMentionDirectory(profiles) {
+        const identities = (mentionTriggerSettings.mentionDirectory?.identities || [])
+          .map((item) => ({
+            ...item,
+            discordUserIds: [...(item.discordUserIds || [])],
+            lineUserIds: [...(item.lineUserIds || [])],
+          }));
+
+        const byMention = new Map();
+        for (const identity of identities) {
+          const key = String(identity.slackMention || '').trim().toLowerCase();
+          if (key) {
+            byMention.set(key, identity);
+          }
+        }
+
+        let changed = false;
+        for (const profile of profiles) {
+          const slackMention = String(profile.slackMention || '').trim();
+          const discordUserId = String(profile.discordUserId || '').trim();
+          if (!slackMention || !discordUserId) {
+            continue;
+          }
+
+          const key = slackMention.toLowerCase();
+          let identity = byMention.get(key);
+          if (!identity) {
+            identity = {
+              enabled: true,
+              label: String(profile.note || slackMention).trim(),
+              slackMention,
+              discordUserIds: [],
+              lineUserIds: [],
+            };
+            identities.push(identity);
+            byMention.set(key, identity);
+            changed = true;
+          }
+
+          if (!identity.discordUserIds.includes(discordUserId)) {
+            identity.discordUserIds.push(discordUserId);
+            changed = true;
+          }
+        }
+
+        if (!changed) {
+          return false;
+        }
+
+        const updated = await saveMentionIdentityBulk(identities);
+        mentionTriggerSettings.mentionDirectory = updated;
+        renderMentionTriggerSettings();
+        return true;
+      }
+
+      // Same as the Discord sync, but pushes the LINE UID into the matching
+      // identity's lineUserIds (creating an identity if none matches the mention).
+      async function syncGlobalExcludedLineProfilesToMentionDirectory(profiles) {
+        const identities = (mentionTriggerSettings.mentionDirectory?.identities || [])
+          .map((item) => ({
+            ...item,
+            discordUserIds: [...(item.discordUserIds || [])],
+            lineUserIds: [...(item.lineUserIds || [])],
+          }));
+
+        const byMention = new Map();
+        for (const identity of identities) {
+          const key = String(identity.slackMention || '').trim().toLowerCase();
+          if (key) {
+            byMention.set(key, identity);
+          }
+        }
+
+        let changed = false;
+        for (const profile of profiles) {
+          const slackMention = String(profile.slackMention || '').trim();
+          const lineUserId = String(profile.lineUserId || '').trim();
+          if (!slackMention || !lineUserId) {
+            continue;
+          }
+
+          const key = slackMention.toLowerCase();
+          let identity = byMention.get(key);
+          if (!identity) {
+            identity = {
+              enabled: true,
+              label: String(profile.note || slackMention).trim(),
+              slackMention,
+              discordUserIds: [],
+              lineUserIds: [],
+            };
+            identities.push(identity);
+            byMention.set(key, identity);
+            changed = true;
+          }
+
+          if (!identity.lineUserIds.includes(lineUserId)) {
+            identity.lineUserIds.push(lineUserId);
+            changed = true;
+          }
+        }
+
+        if (!changed) {
+          return false;
+        }
+
+        const updated = await saveMentionIdentityBulk(identities);
+        mentionTriggerSettings.mentionDirectory = updated;
+        renderMentionTriggerSettings();
+        return true;
+      }
+
       async function exportRulesFile() {
         const res = await fetch('/api/admin/rules-export');
         if (!res.ok) {
@@ -2084,7 +2336,13 @@ router.get('/admin', (_req, res) => {
         }
 
         const json = await res.json();
-        return json.settings || { globalExcludedAuthorIds: [], globalExcludedAuthorRoleIds: [], globalExcludedLineSpeakerIds: [] };
+        return json.settings || {
+          globalExcludedAuthorIds: [],
+          globalExcludedAuthorProfiles: [],
+          globalExcludedAuthorRoleIds: [],
+          globalExcludedLineSpeakerIds: [],
+          globalExcludedLineSpeakerProfiles: [],
+        };
       }
 
       function renderSlackSummary() {
@@ -2222,6 +2480,7 @@ router.get('/admin', (_req, res) => {
         if (input) {
           input.value = (relaySettings.globalExcludedAuthorIds || []).join(', ');
         }
+        renderGlobalExcludedAuthorRows();
 
         const roleInput = asInput('globalExcludedAuthorRoleIds');
         if (roleInput) {
@@ -2232,6 +2491,334 @@ router.get('/admin', (_req, res) => {
         if (lineInput) {
           lineInput.value = (relaySettings.globalExcludedLineSpeakerIds || []).join(', ');
         }
+        renderGlobalExcludedLineSpeakerRows();
+      }
+
+      function getSlackDisplayNameFromMention(mention) {
+        const slackUserId = getSlackUserIdFromMention(mention);
+        if (!slackUserId) {
+          return '';
+        }
+
+        const user = (slackOptions.users || []).find((item) => String(item.id || '').toUpperCase() === slackUserId);
+        return user ? String(user.displayName || user.id || '').trim() : '';
+      }
+
+      function getMappedIdentityByDiscordUserId(discordUserId) {
+        const targetId = String(discordUserId || '').trim();
+        if (!targetId) {
+          return null;
+        }
+
+        const identities = mentionTriggerSettings.mentionDirectory?.identities || [];
+        return identities.find((item) => (item.discordUserIds || []).includes(targetId)) || null;
+      }
+
+      function renderGlobalExcludedAuthorRows() {
+        const rows = byId('globalExcludedAuthorRows');
+        if (!(rows instanceof HTMLElement)) {
+          return;
+        }
+
+        const ids = splitCSV(asInput('globalExcludedAuthorIds')?.value || '');
+        const profileMap = new Map();
+        for (const item of relaySettings.globalExcludedAuthorProfiles || []) {
+          const id = String(item?.discordUserId || '').trim();
+          if (id) {
+            profileMap.set(id, item);
+          }
+        }
+
+        rows.innerHTML = '';
+
+        for (const id of ids) {
+          const existing = profileMap.get(id);
+          const mappedIdentity = getMappedIdentityByDiscordUserId(id);
+          const mappedMention = String(mappedIdentity?.slackMention || '').trim();
+          const slackMention = String(existing?.slackMention || mappedMention || '').trim();
+          const resolvedName = getSlackDisplayNameFromMention(slackMention);
+          const fallbackAuthor = (recentDiscordAuthors || []).find((author) => String(author.id || '').trim() === id);
+          const fallbackNote = String(mappedIdentity?.label || fallbackAuthor?.displayName || '').trim();
+          const note = String(existing?.note || resolvedName || fallbackNote || '').trim();
+
+          const row = document.createElement('tr');
+          row.className = 'global-excluded-row';
+          row.dataset.discordUserId = id;
+
+          const idCell = document.createElement('td');
+          const noteCell = document.createElement('td');
+          const slackCell = document.createElement('td');
+          const actionCell = document.createElement('td');
+
+          const idInput = document.createElement('input');
+          idInput.value = id;
+          idInput.dataset.field = 'discordUserId';
+
+          const noteInput = document.createElement('input');
+          noteInput.value = note;
+          noteInput.placeholder = '例如：採購窗口、內部 PM';
+          noteInput.dataset.field = 'note';
+
+          const slackSelect = document.createElement('select');
+          slackSelect.dataset.field = 'slackMention';
+          const emptyOption = document.createElement('option');
+          emptyOption.value = '';
+          emptyOption.textContent = '不指定';
+          slackSelect.appendChild(emptyOption);
+
+          const sortedUsers = [...(slackOptions.users || [])]
+            .sort((a, b) => String(a.displayName || '').localeCompare(String(b.displayName || ''), 'zh-Hant'));
+          for (const user of sortedUsers) {
+            const option = document.createElement('option');
+            option.value = '<@' + user.id + '>';
+            option.textContent = user.displayName + ' (<@' + user.id + '>)';
+            slackSelect.appendChild(option);
+          }
+
+          if (slackMention && !Array.from(slackSelect.options).some((option) => option.value === slackMention)) {
+            const legacyOption = document.createElement('option');
+            legacyOption.value = slackMention;
+            legacyOption.textContent = '既有值: ' + slackMention;
+            slackSelect.appendChild(legacyOption);
+          }
+          slackSelect.value = slackMention;
+
+          const removeBtn = document.createElement('button');
+          removeBtn.type = 'button';
+          removeBtn.className = 'secondary';
+          removeBtn.dataset.action = 'remove-global-excluded-row';
+          removeBtn.textContent = '移除';
+
+          idCell.appendChild(idInput);
+          noteCell.appendChild(noteInput);
+          slackCell.appendChild(slackSelect);
+          actionCell.appendChild(removeBtn);
+          row.appendChild(idCell);
+          row.appendChild(noteCell);
+          row.appendChild(slackCell);
+          row.appendChild(actionCell);
+          rows.appendChild(row);
+        }
+
+        if (!ids.length) {
+          const emptyRow = document.createElement('tr');
+          const emptyCell = document.createElement('td');
+          emptyCell.colSpan = 4;
+          emptyCell.className = 'hint';
+          emptyCell.textContent = '目前沒有全域排除作者 ID。先從上方輸入或「近期作者加入」。';
+          emptyRow.appendChild(emptyCell);
+          rows.appendChild(emptyRow);
+        }
+      }
+
+      function collectGlobalExcludedAuthorProfilesFromRows() {
+        const rows = byId('globalExcludedAuthorRows');
+        if (!(rows instanceof HTMLElement)) {
+          return [];
+        }
+
+        const result = [];
+        const seen = new Set();
+        const items = rows.querySelectorAll('.global-excluded-row');
+        for (const row of items) {
+          if (!(row instanceof HTMLElement)) {
+            continue;
+          }
+
+          const idInput = row.querySelector('input[data-field="discordUserId"]');
+          const noteInput = row.querySelector('input[data-field="note"]');
+          const slackSelect = row.querySelector('select[data-field="slackMention"]');
+
+          const discordUserId = idInput instanceof HTMLInputElement
+            ? idInput.value.trim()
+            : '';
+          if (!discordUserId || seen.has(discordUserId)) {
+            continue;
+          }
+
+          seen.add(discordUserId);
+          const note = noteInput instanceof HTMLInputElement
+            ? noteInput.value.trim()
+            : '';
+          const slackMention = slackSelect instanceof HTMLSelectElement
+            ? slackSelect.value.trim()
+            : '';
+
+          result.push({
+            discordUserId,
+            note,
+            slackMention: slackMention || undefined,
+          });
+        }
+
+        return result;
+      }
+
+      function getMappedIdentityByLineUserId(lineUserId) {
+        const targetId = String(lineUserId || '').trim();
+        if (!targetId) {
+          return null;
+        }
+
+        const identities = mentionTriggerSettings.mentionDirectory?.identities || [];
+        return identities.find((item) => (item.lineUserIds || []).includes(targetId)) || null;
+      }
+
+      function getLineSpeakerDisplayName(lineUserId) {
+        const targetId = String(lineUserId || '').trim();
+        if (!targetId) {
+          return '';
+        }
+
+        for (const group of lineSources) {
+          for (const speaker of group.speakers || []) {
+            if (String(speaker.id || '').trim() === targetId) {
+              return String(speaker.displayName || '').trim();
+            }
+          }
+        }
+
+        return '';
+      }
+
+      function renderGlobalExcludedLineSpeakerRows() {
+        const rows = byId('globalExcludedLineSpeakerRows');
+        if (!(rows instanceof HTMLElement)) {
+          return;
+        }
+
+        const ids = splitCSV(asInput('globalExcludedLineSpeakerIds')?.value || '');
+        const profileMap = new Map();
+        for (const item of relaySettings.globalExcludedLineSpeakerProfiles || []) {
+          const id = String(item?.lineUserId || '').trim();
+          if (id) {
+            profileMap.set(id, item);
+          }
+        }
+
+        rows.innerHTML = '';
+
+        for (const id of ids) {
+          const existing = profileMap.get(id);
+          const mappedIdentity = getMappedIdentityByLineUserId(id);
+          const mappedMention = String(mappedIdentity?.slackMention || '').trim();
+          const slackMention = String(existing?.slackMention || mappedMention || '').trim();
+          const resolvedName = getSlackDisplayNameFromMention(slackMention);
+          const fallbackName = getLineSpeakerDisplayName(id);
+          const fallbackNote = String(mappedIdentity?.label || fallbackName || '').trim();
+          const note = String(existing?.note || resolvedName || fallbackNote || '').trim();
+
+          const row = document.createElement('tr');
+          row.className = 'global-excluded-row';
+          row.dataset.lineUserId = id;
+
+          const idCell = document.createElement('td');
+          const noteCell = document.createElement('td');
+          const slackCell = document.createElement('td');
+          const actionCell = document.createElement('td');
+
+          const idInput = document.createElement('input');
+          idInput.value = id;
+          idInput.dataset.field = 'lineUserId';
+
+          const noteInput = document.createElement('input');
+          noteInput.value = note;
+          noteInput.placeholder = '例如：採購窗口、內部 PM';
+          noteInput.dataset.field = 'note';
+
+          const slackSelect = document.createElement('select');
+          slackSelect.dataset.field = 'slackMention';
+          const emptyOption = document.createElement('option');
+          emptyOption.value = '';
+          emptyOption.textContent = '不指定';
+          slackSelect.appendChild(emptyOption);
+
+          const sortedUsers = [...(slackOptions.users || [])]
+            .sort((a, b) => String(a.displayName || '').localeCompare(String(b.displayName || ''), 'zh-Hant'));
+          for (const user of sortedUsers) {
+            const option = document.createElement('option');
+            option.value = '<@' + user.id + '>';
+            option.textContent = user.displayName + ' (<@' + user.id + '>)';
+            slackSelect.appendChild(option);
+          }
+
+          if (slackMention && !Array.from(slackSelect.options).some((option) => option.value === slackMention)) {
+            const legacyOption = document.createElement('option');
+            legacyOption.value = slackMention;
+            legacyOption.textContent = '既有值: ' + slackMention;
+            slackSelect.appendChild(legacyOption);
+          }
+          slackSelect.value = slackMention;
+
+          const removeBtn = document.createElement('button');
+          removeBtn.type = 'button';
+          removeBtn.className = 'secondary';
+          removeBtn.dataset.action = 'remove-global-excluded-line-row';
+          removeBtn.textContent = '移除';
+
+          idCell.appendChild(idInput);
+          noteCell.appendChild(noteInput);
+          slackCell.appendChild(slackSelect);
+          actionCell.appendChild(removeBtn);
+          row.appendChild(idCell);
+          row.appendChild(noteCell);
+          row.appendChild(slackCell);
+          row.appendChild(actionCell);
+          rows.appendChild(row);
+        }
+
+        if (!ids.length) {
+          const emptyRow = document.createElement('tr');
+          const emptyCell = document.createElement('td');
+          emptyCell.colSpan = 4;
+          emptyCell.className = 'hint';
+          emptyCell.textContent = '目前沒有 LINE 全域排除發言者 ID。先從上方輸入或「最近發言者加入」。';
+          emptyRow.appendChild(emptyCell);
+          rows.appendChild(emptyRow);
+        }
+      }
+
+      function collectGlobalExcludedLineSpeakerProfilesFromRows() {
+        const rows = byId('globalExcludedLineSpeakerRows');
+        if (!(rows instanceof HTMLElement)) {
+          return [];
+        }
+
+        const result = [];
+        const seen = new Set();
+        const items = rows.querySelectorAll('.global-excluded-row');
+        for (const row of items) {
+          if (!(row instanceof HTMLElement)) {
+            continue;
+          }
+
+          const idInput = row.querySelector('input[data-field="lineUserId"]');
+          const noteInput = row.querySelector('input[data-field="note"]');
+          const slackSelect = row.querySelector('select[data-field="slackMention"]');
+
+          const lineUserId = idInput instanceof HTMLInputElement
+            ? idInput.value.trim()
+            : '';
+          if (!lineUserId || seen.has(lineUserId)) {
+            continue;
+          }
+
+          seen.add(lineUserId);
+          const note = noteInput instanceof HTMLInputElement
+            ? noteInput.value.trim()
+            : '';
+          const slackMention = slackSelect instanceof HTMLSelectElement
+            ? slackSelect.value.trim()
+            : '';
+
+          result.push({
+            lineUserId,
+            note,
+            slackMention: slackMention || undefined,
+          });
+        }
+
+        return result;
       }
 
       function getAllDiscordRoleOptions() {
@@ -2349,6 +2936,8 @@ router.get('/admin', (_req, res) => {
             ruleSelect.appendChild(option);
           }
         }
+
+        renderGlobalExcludedAuthorRows();
       }
 
       async function refreshExcludedAuthorOptions() {
@@ -3018,19 +3607,57 @@ router.get('/admin', (_req, res) => {
 
         byId('saveGlobalSettingsBtn')?.addEventListener('click', async () => {
           const input = asInput('globalExcludedAuthorIds');
-          const values = input ? splitCSV(input.value) : [];
+          const profileRows = collectGlobalExcludedAuthorProfilesFromRows();
+          const profileIds = profileRows.map((item) => item.discordUserId);
+          const values = Array.from(new Set(profileIds.concat(input ? splitCSV(input.value) : [])));
+          if (input) {
+            input.value = values.join(', ');
+          }
+
+          // Ensure every global excluded ID has a profile row for later editing.
+          const profileMap = new Map(profileRows.map((item) => [item.discordUserId, item]));
+          const profiles = values.map((id) => {
+            const existing = profileMap.get(id);
+            if (existing) {
+              return existing;
+            }
+            const mappedIdentity = getMappedIdentityByDiscordUserId(id);
+            const mappedMention = String(mappedIdentity?.slackMention || '').trim();
+            return {
+              discordUserId: id,
+              note: String(mappedIdentity?.label || '').trim(),
+              slackMention: mappedMention || undefined,
+            };
+          });
+
           const roleInput = asInput('globalExcludedAuthorRoleIds');
           const roleValues = roleInput ? splitCSV(roleInput.value) : [];
 
           try {
             relaySettings = await saveSettings({
               globalExcludedAuthorIds: values,
+              globalExcludedAuthorProfiles: profiles,
               globalExcludedAuthorRoleIds: roleValues,
             });
             renderGlobalSettings();
+
+            let syncedToDirectory = false;
+            let syncFailed = false;
+            try {
+              syncedToDirectory = await syncGlobalExcludedProfilesToMentionDirectory(profiles);
+            } catch {
+              syncFailed = true;
+            }
+
             const status = byId('globalSettingsStatus');
             if (status instanceof HTMLElement) {
-              status.textContent = '全域排除作者已儲存（執行期 union 立即生效）。';
+              let message = '全域排除作者已儲存（執行期 union 立即生效）。';
+              if (syncedToDirectory) {
+                message += '已同步指定的 Slack 對象到身分主檔。';
+              } else if (syncFailed) {
+                message += '但同步到 Slack 身分主檔失敗，請至「Slack 身分主檔」確認。';
+              }
+              status.textContent = message;
             }
           } catch {
             const status = byId('globalSettingsStatus');
@@ -3042,14 +3669,53 @@ router.get('/admin', (_req, res) => {
 
         byId('saveLineGlobalSettingsBtn')?.addEventListener('click', async () => {
           const input = asInput('globalExcludedLineSpeakerIds');
-          const values = input ? splitCSV(input.value) : [];
+          const profileRows = collectGlobalExcludedLineSpeakerProfilesFromRows();
+          const profileIds = profileRows.map((item) => item.lineUserId);
+          const values = Array.from(new Set(profileIds.concat(input ? splitCSV(input.value) : [])));
+          if (input) {
+            input.value = values.join(', ');
+          }
+
+          // Ensure every global excluded ID has a profile row for later editing.
+          const profileMap = new Map(profileRows.map((item) => [item.lineUserId, item]));
+          const profiles = values.map((id) => {
+            const existing = profileMap.get(id);
+            if (existing) {
+              return existing;
+            }
+            const mappedIdentity = getMappedIdentityByLineUserId(id);
+            const mappedMention = String(mappedIdentity?.slackMention || '').trim();
+            return {
+              lineUserId: id,
+              note: String(mappedIdentity?.label || '').trim(),
+              slackMention: mappedMention || undefined,
+            };
+          });
 
           try {
-            relaySettings = await saveSettings({ globalExcludedLineSpeakerIds: values });
+            relaySettings = await saveSettings({
+              globalExcludedLineSpeakerIds: values,
+              globalExcludedLineSpeakerProfiles: profiles,
+            });
             renderGlobalSettings();
+
+            let syncedToDirectory = false;
+            let syncFailed = false;
+            try {
+              syncedToDirectory = await syncGlobalExcludedLineProfilesToMentionDirectory(profiles);
+            } catch {
+              syncFailed = true;
+            }
+
             const status = byId('lineGlobalSettingsStatus');
             if (status instanceof HTMLElement) {
-              status.textContent = 'LINE 全域排除發言者已儲存（執行期 union 立即生效）。';
+              let message = 'LINE 全域排除發言者已儲存（執行期 union 立即生效）。';
+              if (syncedToDirectory) {
+                message += '已同步指定的 Slack 對象到身分主檔。';
+              } else if (syncFailed) {
+                message += '但同步到 Slack 身分主檔失敗，請至「Slack 身分主檔」確認。';
+              }
+              status.textContent = message;
             }
           } catch {
             const status = byId('lineGlobalSettingsStatus');
@@ -3102,6 +3768,7 @@ router.get('/admin', (_req, res) => {
           if (!select || !input) return;
           const ids = Array.from(select.selectedOptions).map((option) => option.value.trim()).filter(Boolean);
           mergeIdsToInput(input, ids);
+          renderGlobalExcludedAuthorRows();
         });
 
         byId('addGlobalExcludedAuthorRoleBtn')?.addEventListener('click', () => {
@@ -3110,6 +3777,59 @@ router.get('/admin', (_req, res) => {
           if (!select || !input) return;
           const ids = Array.from(select.selectedOptions).map((option) => option.value.trim()).filter(Boolean);
           mergeIdsToInput(input, ids);
+        });
+
+        byId('syncGlobalExcludedAuthorRowsBtn')?.addEventListener('click', () => {
+          renderGlobalExcludedAuthorRows();
+        });
+
+        byId('globalExcludedAuthorRows')?.addEventListener('change', (event) => {
+          const target = event.target;
+          if (!(target instanceof HTMLElement)) {
+            return;
+          }
+
+          if (target instanceof HTMLSelectElement && target.dataset.field === 'slackMention') {
+            const row = target.closest('.global-excluded-row');
+            if (!(row instanceof HTMLElement)) {
+              return;
+            }
+
+            const noteInput = row.querySelector('input[data-field="note"]');
+            if (!(noteInput instanceof HTMLInputElement)) {
+              return;
+            }
+
+            if (!noteInput.value.trim()) {
+              const displayName = getSlackDisplayNameFromMention(target.value);
+              if (displayName) {
+                noteInput.value = displayName;
+              }
+            }
+          }
+        });
+
+        byId('globalExcludedAuthorRows')?.addEventListener('click', (event) => {
+          const target = event.target;
+          if (!(target instanceof HTMLElement)) {
+            return;
+          }
+
+          if (target.dataset.action !== 'remove-global-excluded-row') {
+            return;
+          }
+
+          const row = target.closest('.global-excluded-row');
+          if (!(row instanceof HTMLElement)) {
+            return;
+          }
+
+          row.remove();
+          const remaining = collectGlobalExcludedAuthorProfilesFromRows().map((item) => item.discordUserId);
+          const input = asInput('globalExcludedAuthorIds');
+          if (input) {
+            input.value = remaining.join(', ');
+          }
         });
 
         byId('addExcludedAuthorBtn')?.addEventListener('click', () => {
@@ -3134,6 +3854,60 @@ router.get('/admin', (_req, res) => {
           if (!select || !input) return;
           const ids = Array.from(select.selectedOptions).map((option) => option.value.trim()).filter(Boolean);
           mergeIdsToInput(input, ids);
+          renderGlobalExcludedLineSpeakerRows();
+        });
+
+        byId('syncGlobalExcludedLineSpeakerRowsBtn')?.addEventListener('click', () => {
+          renderGlobalExcludedLineSpeakerRows();
+        });
+
+        byId('globalExcludedLineSpeakerRows')?.addEventListener('change', (event) => {
+          const target = event.target;
+          if (!(target instanceof HTMLElement)) {
+            return;
+          }
+
+          if (target instanceof HTMLSelectElement && target.dataset.field === 'slackMention') {
+            const row = target.closest('.global-excluded-row');
+            if (!(row instanceof HTMLElement)) {
+              return;
+            }
+
+            const noteInput = row.querySelector('input[data-field="note"]');
+            if (!(noteInput instanceof HTMLInputElement)) {
+              return;
+            }
+
+            if (!noteInput.value.trim()) {
+              const displayName = getSlackDisplayNameFromMention(target.value);
+              if (displayName) {
+                noteInput.value = displayName;
+              }
+            }
+          }
+        });
+
+        byId('globalExcludedLineSpeakerRows')?.addEventListener('click', (event) => {
+          const target = event.target;
+          if (!(target instanceof HTMLElement)) {
+            return;
+          }
+
+          if (target.dataset.action !== 'remove-global-excluded-line-row') {
+            return;
+          }
+
+          const row = target.closest('.global-excluded-row');
+          if (!(row instanceof HTMLElement)) {
+            return;
+          }
+
+          row.remove();
+          const remaining = collectGlobalExcludedLineSpeakerProfilesFromRows().map((item) => item.lineUserId);
+          const input = asInput('globalExcludedLineSpeakerIds');
+          if (input) {
+            input.value = remaining.join(', ');
+          }
         });
 
         byId('refreshMentionIdentityFromSlackBtn')?.addEventListener('click', async () => {
