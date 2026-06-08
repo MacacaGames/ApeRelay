@@ -418,6 +418,9 @@ function parseDiscordRuleInput(input: Partial<DiscordRelayRule>): {
     excludedAuthorIds: Array.isArray(input.excludedAuthorIds)
       ? input.excludedAuthorIds.map((value) => String(value).trim()).filter(Boolean)
       : [],
+    excludedAuthorRoleIds: Array.isArray(input.excludedAuthorRoleIds)
+      ? input.excludedAuthorRoleIds.map((value) => String(value).trim()).filter(Boolean)
+      : [],
   };
 
   const missingFields: string[] = [];
@@ -897,11 +900,13 @@ router.post('/api/admin/rules-import', async (req, res) => {
 router.put('/api/admin/settings', async (req, res) => {
   const body = req.body as {
     globalExcludedAuthorIds?: unknown;
+    globalExcludedAuthorRoleIds?: unknown;
     globalExcludedLineSpeakerIds?: unknown;
   };
 
   const patch: {
     globalExcludedAuthorIds?: string[];
+    globalExcludedAuthorRoleIds?: string[];
     globalExcludedLineSpeakerIds?: string[];
   } = {};
 
@@ -913,6 +918,12 @@ router.put('/api/admin/settings', async (req, res) => {
 
   if (Array.isArray(body.globalExcludedLineSpeakerIds)) {
     patch.globalExcludedLineSpeakerIds = body.globalExcludedLineSpeakerIds
+      .map((value) => String(value).trim())
+      .filter(Boolean);
+  }
+
+  if (Array.isArray(body.globalExcludedAuthorRoleIds)) {
+    patch.globalExcludedAuthorRoleIds = body.globalExcludedAuthorRoleIds
       .map((value) => String(value).trim())
       .filter(Boolean);
   }
@@ -953,6 +964,11 @@ router.put('/api/admin/discord-rules/:id', async (req, res) => {
   }
   if (Array.isArray(body.excludedAuthorIds)) {
     patch.excludedAuthorIds = body.excludedAuthorIds
+      .map((value) => String(value).trim())
+      .filter(Boolean);
+  }
+  if (Array.isArray(body.excludedAuthorRoleIds)) {
+    patch.excludedAuthorRoleIds = body.excludedAuthorRoleIds
       .map((value) => String(value).trim())
       .filter(Boolean);
   }
@@ -1411,8 +1427,13 @@ router.get('/admin', (_req, res) => {
           <input id="globalExcludedAuthorIds" placeholder="例如 123456789012345678, 987654321098765432" />
           <label>從近期作者加入（可多選）</label>
           <select id="globalExcludedAuthorSelect" multiple size="6"></select>
+          <label>Discord Role ID（多個用逗號分隔）</label>
+          <input id="globalExcludedAuthorRoleIds" placeholder="例如 123456789012345678, 987654321098765432" />
+          <label>從角色清單加入（可多選）</label>
+          <select id="globalExcludedAuthorRoleSelect" multiple size="6"></select>
           <div class="actions">
             <button id="addGlobalExcludedAuthorBtn" class="secondary">加入到全域排除</button>
+            <button id="addGlobalExcludedAuthorRoleBtn" class="secondary">加入到全域排除角色</button>
             <button id="saveGlobalSettingsBtn">儲存全域設定</button>
           </div>
           <div id="globalSettingsStatus" class="hint"></div>
@@ -1447,9 +1468,14 @@ router.get('/admin', (_req, res) => {
             <input id="excludedAuthorIds" placeholder="例如 123456789012345678, 987654321098765432" />
             <label>從近期作者加入（可多選）</label>
             <select id="excludedAuthorSelect" multiple size="6"></select>
+            <label>排除轉發身份組（Discord Role ID，多個用逗號分隔）</label>
+            <input id="excludedAuthorRoleIds" placeholder="例如 123456789012345678, 987654321098765432" />
+            <label>從角色清單加入（可多選）</label>
+            <select id="excludedAuthorRoleSelect" multiple size="6"></select>
 
             <div class="actions">
               <button id="addExcludedAuthorBtn" class="secondary">加入到規則排除</button>
+              <button id="addExcludedAuthorRoleBtn" class="secondary">加入到規則排除角色</button>
             </div>
           </div>
 
@@ -1674,7 +1700,7 @@ router.get('/admin', (_req, res) => {
         loaded: { channels: 0, users: 0, usergroups: 0 },
       };
 
-      let relaySettings = { globalExcludedAuthorIds: [], globalExcludedLineSpeakerIds: [] };
+      let relaySettings = { globalExcludedAuthorIds: [], globalExcludedAuthorRoleIds: [], globalExcludedLineSpeakerIds: [] };
       let mentionTriggerSettings = {
         discordMentionTrigger: { enabled: false, allowedGuildIds: [], mappings: [] },
         lineMentionTrigger: { enabled: false, allowedGroupIds: [], excludedGroupIds: [], mappings: [] },
@@ -1912,7 +1938,7 @@ router.get('/admin', (_req, res) => {
       async function fetchSettings() {
         const res = await fetch('/api/admin/settings');
         const json = await res.json();
-        return json.settings || { globalExcludedAuthorIds: [], globalExcludedLineSpeakerIds: [] };
+        return json.settings || { globalExcludedAuthorIds: [], globalExcludedAuthorRoleIds: [], globalExcludedLineSpeakerIds: [] };
       }
 
       async function fetchMentionTriggerSettings() {
@@ -2058,7 +2084,7 @@ router.get('/admin', (_req, res) => {
         }
 
         const json = await res.json();
-        return json.settings || { globalExcludedAuthorIds: [], globalExcludedLineSpeakerIds: [] };
+        return json.settings || { globalExcludedAuthorIds: [], globalExcludedAuthorRoleIds: [], globalExcludedLineSpeakerIds: [] };
       }
 
       function renderSlackSummary() {
@@ -2197,9 +2223,56 @@ router.get('/admin', (_req, res) => {
           input.value = (relaySettings.globalExcludedAuthorIds || []).join(', ');
         }
 
+        const roleInput = asInput('globalExcludedAuthorRoleIds');
+        if (roleInput) {
+          roleInput.value = (relaySettings.globalExcludedAuthorRoleIds || []).join(', ');
+        }
+
         const lineInput = asInput('globalExcludedLineSpeakerIds');
         if (lineInput) {
           lineInput.value = (relaySettings.globalExcludedLineSpeakerIds || []).join(', ');
+        }
+      }
+
+      function getAllDiscordRoleOptions() {
+        const dedup = new Map();
+        for (const guild of discordSources) {
+          for (const role of guild.roles || []) {
+            if (!dedup.has(role.id)) {
+              dedup.set(role.id, { ...role, guildName: guild.name });
+            }
+          }
+        }
+
+        return Array.from(dedup.values())
+          .sort((a, b) => String(a.name || '').localeCompare(String(b.name || ''), 'zh-Hant'));
+      }
+
+      function renderGlobalExcludedAuthorRoleOptions() {
+        const select = asSelect('globalExcludedAuthorRoleSelect');
+        if (!select) return;
+
+        select.innerHTML = '';
+        for (const role of getAllDiscordRoleOptions()) {
+          const option = document.createElement('option');
+          option.value = role.id;
+          option.textContent = role.name + ' (' + role.id + ') [' + role.guildName + ']';
+          select.appendChild(option);
+        }
+      }
+
+      function renderRuleExcludedAuthorRoleOptions(guildId) {
+        const select = asSelect('excludedAuthorRoleSelect');
+        if (!select) return;
+
+        select.innerHTML = '';
+        const guild = discordSources.find((item) => item.id === guildId);
+        const roles = guild?.roles || [];
+        for (const role of roles) {
+          const option = document.createElement('option');
+          option.value = role.id;
+          option.textContent = role.name + ' (' + role.id + ')';
+          select.appendChild(option);
         }
       }
 
@@ -2289,6 +2362,8 @@ router.get('/admin', (_req, res) => {
         const result = await fetchDiscordSources();
         discordSources = result.guilds;
         renderGuildOptions();
+        renderGlobalExcludedAuthorRoleOptions();
+        renderRuleExcludedAuthorRoleOptions(asInput('guildId')?.value.trim() || asSelect('guildSelect')?.value || '');
         renderChannelOptions(asInput('guildId')?.value.trim() || asSelect('guildSelect')?.value || '');
         await refreshExcludedAuthorOptions();
         await refreshSharedRules();
@@ -2561,6 +2636,7 @@ router.get('/admin', (_req, res) => {
           'discordSlackChannel',
           'discordMentionsCustom',
           'excludedAuthorIds',
+          'excludedAuthorRoleIds',
         ];
         for (const id of fields) {
           const input = asInput(id);
@@ -2569,6 +2645,7 @@ router.get('/admin', (_req, res) => {
 
         const guildSelect = asSelect('guildSelect');
         if (guildSelect) guildSelect.value = '';
+        renderRuleExcludedAuthorRoleOptions('');
         renderChannelOptions('');
 
         const channelSelect = asSelect('channelSelect');
@@ -2596,6 +2673,7 @@ router.get('/admin', (_req, res) => {
 
         const guildSelect = asSelect('guildSelect');
         if (guildSelect) guildSelect.value = rule.sourceGuildId || '';
+        renderRuleExcludedAuthorRoleOptions(rule.sourceGuildId || '');
         renderChannelOptions(rule.sourceGuildId || '');
 
         const channelSelect = asSelect('channelSelect');
@@ -2641,6 +2719,11 @@ router.get('/admin', (_req, res) => {
         const excluded = asInput('excludedAuthorIds');
         if (excluded) {
           excluded.value = (rule.excludedAuthorIds || []).join(', ');
+        }
+
+        const excludedRoles = asInput('excludedAuthorRoleIds');
+        if (excludedRoles) {
+          excludedRoles.value = (rule.excludedAuthorRoleIds || []).join(', ');
         }
 
         const saveBtn = byId('saveDiscordRuleBtn');
@@ -2785,6 +2868,11 @@ router.get('/admin', (_req, res) => {
               .map((value) => getMentionDisplay(value))
               .filter(Boolean)
               .join(' ');
+            const excludedUserRows = (rule.excludedAuthorIds || []).map((id) => renderCellLine('User', id));
+            const excludedRoleRows = (rule.excludedAuthorRoleIds || []).map((id) => renderCellLine('Role', id));
+            const excludedDisplay = excludedUserRows.length || excludedRoleRows.length
+              ? '<div class="cell-stack">' + excludedUserRows.join('') + excludedRoleRows.join('') + '</div>'
+              : '<span class="cell-value">無</span>';
 
             tr.innerHTML = [
               '<td>' + renderPlatformBadge('Discord') + '</td>',
@@ -2792,7 +2880,7 @@ router.get('/admin', (_req, res) => {
               '<td>' + renderDiscordSourceCell(rule) + '</td>',
               '<td title="' + escapeHtml(rule.targetSlackChannel) + '">' + renderTargetCell(rule.targetSlackChannel) + '</td>',
               '<td>' + renderMentionList(rule.mentionTargets || []) + '</td>',
-              '<td>' + renderMentionList(rule.excludedAuthorIds || []) + '</td>',
+              '<td>' + excludedDisplay + '</td>',
               '<td><input type="checkbox" ' + (rule.enabled ? 'checked' : '') + ' data-action="toggle-discord" data-id="' + rule.id + '" /></td>',
               '<td><div class="table-actions"><button class="secondary" data-action="edit-discord" data-id="' + rule.id + '">編輯</button><button class="secondary" data-action="delete-discord" data-id="' + rule.id + '">刪除</button></div></td>',
             ].join('');
@@ -2931,9 +3019,14 @@ router.get('/admin', (_req, res) => {
         byId('saveGlobalSettingsBtn')?.addEventListener('click', async () => {
           const input = asInput('globalExcludedAuthorIds');
           const values = input ? splitCSV(input.value) : [];
+          const roleInput = asInput('globalExcludedAuthorRoleIds');
+          const roleValues = roleInput ? splitCSV(roleInput.value) : [];
 
           try {
-            relaySettings = await saveSettings({ globalExcludedAuthorIds: values });
+            relaySettings = await saveSettings({
+              globalExcludedAuthorIds: values,
+              globalExcludedAuthorRoleIds: roleValues,
+            });
             renderGlobalSettings();
             const status = byId('globalSettingsStatus');
             if (status instanceof HTMLElement) {
@@ -3011,9 +3104,25 @@ router.get('/admin', (_req, res) => {
           mergeIdsToInput(input, ids);
         });
 
+        byId('addGlobalExcludedAuthorRoleBtn')?.addEventListener('click', () => {
+          const select = asSelect('globalExcludedAuthorRoleSelect');
+          const input = asInput('globalExcludedAuthorRoleIds');
+          if (!select || !input) return;
+          const ids = Array.from(select.selectedOptions).map((option) => option.value.trim()).filter(Boolean);
+          mergeIdsToInput(input, ids);
+        });
+
         byId('addExcludedAuthorBtn')?.addEventListener('click', () => {
           const select = asSelect('excludedAuthorSelect');
           const input = asInput('excludedAuthorIds');
+          if (!select || !input) return;
+          const ids = Array.from(select.selectedOptions).map((option) => option.value.trim()).filter(Boolean);
+          mergeIdsToInput(input, ids);
+        });
+
+        byId('addExcludedAuthorRoleBtn')?.addEventListener('click', () => {
+          const select = asSelect('excludedAuthorRoleSelect');
+          const input = asInput('excludedAuthorRoleIds');
           if (!select || !input) return;
           const ids = Array.from(select.selectedOptions).map((option) => option.value.trim()).filter(Boolean);
           mergeIdsToInput(input, ids);
@@ -3140,11 +3249,14 @@ router.get('/admin', (_req, res) => {
           const guildValue = asSelect('guildSelect')?.value || '';
           const guildInput = asInput('guildId');
           if (guildInput) guildInput.value = guildValue;
+          renderRuleExcludedAuthorRoleOptions(guildValue);
           renderChannelOptions(guildValue);
           refreshExcludedAuthorOptions();
         });
 
         byId('guildId')?.addEventListener('change', () => {
+          const guildValue = asInput('guildId')?.value.trim() || '';
+          renderRuleExcludedAuthorRoleOptions(guildValue);
           refreshExcludedAuthorOptions();
         });
 
@@ -3194,6 +3306,7 @@ router.get('/admin', (_req, res) => {
             targetSlackChannel: asInput('discordSlackChannel')?.value || '',
             mentionTargets: collectMentionTargets('discordMentionTargets', 'discordMentionsCustom'),
             excludedAuthorIds: splitCSV(asInput('excludedAuthorIds')?.value || ''),
+            excludedAuthorRoleIds: splitCSV(asInput('excludedAuthorRoleIds')?.value || ''),
             enabled: Boolean(asInput('discordEnabled')?.checked),
           };
 

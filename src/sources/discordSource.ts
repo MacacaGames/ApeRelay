@@ -31,6 +31,16 @@ function getChannelCandidateIds(message: Message): string[] {
   return ids;
 }
 
+function getAuthorRoleIds(message: Message): string[] {
+  if (!message.member?.roles?.cache || !message.guild?.id) {
+    return [];
+  }
+
+  return message.member.roles.cache
+    .map((role) => role.id)
+    .filter((roleId) => roleId && roleId !== message.guild?.id);
+}
+
 function rememberDiscordAuthor(message: Message): void {
   const authorId = message.author?.id;
   if (!authorId || message.author?.bot) {
@@ -125,6 +135,7 @@ async function startDiscordSource(): Promise<void> {
           guildId: message.guild?.id,
           channelCandidateIds: getChannelCandidateIds(message),
           authorId: message.author.id,
+          authorRoleIds: getAuthorRoleIds(message),
           messageId: message.id,
         },
       });
@@ -159,10 +170,18 @@ function getDiscordSourceOptions(): {
         parentId: 'parentId' in channel ? (channel.parentId ?? undefined) : undefined,
       }));
 
+    const roles = guild.roles.cache
+      .filter((role) => role.id !== guild.id)
+      .map((role) => ({
+        id: role.id,
+        name: role.name,
+      }));
+
     guilds.push({
       id: guild.id,
       name: guild.name,
       channels,
+      roles,
     });
   }
 

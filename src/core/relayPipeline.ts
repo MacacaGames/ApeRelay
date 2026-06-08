@@ -10,6 +10,7 @@ type DiscordRelayContext = {
   guildId?: string;
   channelCandidateIds: string[];
   authorId?: string;
+  authorRoleIds: string[];
   messageId?: string;
 };
 
@@ -70,22 +71,40 @@ function findMatchingRule(
 
 function shouldExcludeAuthor(
   authorId: string | undefined,
+  authorRoleIds: string[],
   globalExcludedAuthorIds: string[],
+  globalExcludedAuthorRoleIds: string[],
   rule?: DiscordRelayRule | null,
 ): boolean {
-  if (!authorId) {
+  if (!authorId && authorRoleIds.length === 0) {
     return false;
   }
 
-  const excluded = new Set<string>(config.discord.excludedUserIds);
+  const excludedUsers = new Set<string>(config.discord.excludedUserIds);
   for (const id of globalExcludedAuthorIds) {
-    excluded.add(id);
+    excludedUsers.add(id);
   }
   for (const id of rule?.excludedAuthorIds ?? []) {
-    excluded.add(id);
+    excludedUsers.add(id);
   }
 
-  return excluded.has(authorId);
+  if (authorId && excludedUsers.has(authorId)) {
+    return true;
+  }
+
+  const excludedRoles = new Set<string>(globalExcludedAuthorRoleIds.map((id) => String(id).trim()).filter(Boolean));
+  for (const id of rule?.excludedAuthorRoleIds ?? []) {
+    const roleId = String(id).trim();
+    if (roleId) {
+      excludedRoles.add(roleId);
+    }
+  }
+
+  if (excludedRoles.size === 0 || authorRoleIds.length === 0) {
+    return false;
+  }
+
+  return authorRoleIds.some((roleId) => excludedRoles.has(String(roleId).trim()));
 }
 
 function findMatchingLineRule(rules: LineRelayRule[], groupId: string): LineRelayRule | null {
@@ -335,7 +354,13 @@ export async function relayIncomingMessage(input: RelayInput): Promise<RelayResu
   const mentionTriggerMatched = triggerMentions.length > 0;
 
   if (matchedRule) {
-    if (shouldExcludeAuthor(discordCtx.authorId, runtimeConfig.globalExcludedAuthorIds, matchedRule)) {
+    if (shouldExcludeAuthor(
+      discordCtx.authorId,
+      discordCtx.authorRoleIds,
+      runtimeConfig.globalExcludedAuthorIds,
+      runtimeConfig.globalExcludedAuthorRoleIds,
+      matchedRule,
+    )) {
       logger.info(
         {
           messageId: discordCtx.messageId,
@@ -363,7 +388,12 @@ export async function relayIncomingMessage(input: RelayInput): Promise<RelayResu
     return { forwarded: true };
   }
 
-  if (shouldExcludeAuthor(discordCtx.authorId, runtimeConfig.globalExcludedAuthorIds)) {
+  if (shouldExcludeAuthor(
+    discordCtx.authorId,
+    discordCtx.authorRoleIds,
+    runtimeConfig.globalExcludedAuthorIds,
+    runtimeConfig.globalExcludedAuthorRoleIds,
+  )) {
     logger.info(
       { messageId: discordCtx.messageId, authorId: discordCtx.authorId },
       'Skip Discord message due to excluded author',

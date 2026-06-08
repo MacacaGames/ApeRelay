@@ -64,6 +64,7 @@ export interface DiscordRelayRule {
   targetSlackChannel: string;
   mentionTargets?: string[];
   excludedAuthorIds?: string[];
+  excludedAuthorRoleIds?: string[];
 }
 
 export interface LineRelayRule {
@@ -82,8 +83,14 @@ export interface DiscordSourceChannelOption {
   parentId?: string;
 }
 
+export interface DiscordSourceRoleOption {
+  id: string;
+  name: string;
+}
+
 export interface DiscordSourceGuildOption {
   id: string;
   name: string;
   channels: DiscordSourceChannelOption[];
+  roles: DiscordSourceRoleOption[];
 }
