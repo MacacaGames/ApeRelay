@@ -30,7 +30,6 @@ caddy_config/
 Thumbs.db
 
 # Editor
-.vscode/
 .idea/
 *.swp
 *.swo
