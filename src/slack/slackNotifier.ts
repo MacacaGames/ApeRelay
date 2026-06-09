@@ -159,6 +159,35 @@ export async function sendToSlack(
   const messageText = buildSlackMessageText(msg, mentionText, resolver);
   const targetChannel = channel ?? config.slack.defaultChannel;
 
+  const blocks: Array<Record<string, unknown>> = [
+    {
+      type: 'section',
+      text: {
+        type: 'mrkdwn',
+        text: messageText,
+      },
+    },
+  ];
+
+  // Slack block-kit buttons only accept http(s) URLs, so skip LINE's line:// deep link.
+  const sourceUrl = String(msg.sourceUrl ?? '').trim();
+  if (/^https?:\/\//i.test(sourceUrl)) {
+    blocks.push({
+      type: 'actions',
+      elements: [
+        {
+          type: 'button',
+          text: {
+            type: 'plain_text',
+            text: '開啟原始訊息',
+            emoji: false,
+          },
+          url: sourceUrl,
+        },
+      ],
+    });
+  }
+
   const response = await fetch(SLACK_API_URL, {
     method: 'POST',
     headers: {
@@ -168,15 +197,7 @@ export async function sendToSlack(
     body: JSON.stringify({
       channel: targetChannel,
       text: messageText,
-      blocks: [
-        {
-          type: 'section',
-          text: {
-            type: 'mrkdwn',
-            text: messageText,
-          },
-        },
-      ],
+      blocks,
       mrkdwn: true,
       link_names: true,
       unfurl_links: false,
