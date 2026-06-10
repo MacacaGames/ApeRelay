@@ -16,6 +16,21 @@ import type {
 
 export type RelayRuleImportMode = 'replace' | 'merge';
 
+export const DEFAULT_SLACK_MESSAGE_TEMPLATE = [
+  '{mentions}',
+  '發訊者：{sender}',
+  '內容：{content}',
+  '',
+  '{source}',
+].join('\n');
+
+function normalizeSlackMessageTemplate(value: unknown): string {
+  if (typeof value !== 'string') {
+    return DEFAULT_SLACK_MESSAGE_TEMPLATE;
+  }
+  return value.trim() ? value : DEFAULT_SLACK_MESSAGE_TEMPLATE;
+}
+
 export type RelayRuleExportData = {
   version: 1;
   exportedAt: string;
@@ -29,6 +44,7 @@ export type RelayRuleExportData = {
   discordMentionTrigger: DiscordMentionTriggerConfig;
   lineMentionTrigger: LineMentionTriggerConfig;
   mentionDirectory: MentionDirectoryConfig;
+  slackMessageTemplate: string;
 };
 
 type RelayRuleStoreData = {
@@ -42,6 +58,7 @@ type RelayRuleStoreData = {
   discordMentionTrigger: DiscordMentionTriggerConfig;
   lineMentionTrigger: LineMentionTriggerConfig;
   mentionDirectory: MentionDirectoryConfig;
+  slackMessageTemplate: string;
 };
 
 const DATA_DIR = path.join(process.cwd(), 'data');
@@ -260,6 +277,7 @@ async function ensureStoreFile(): Promise<void> {
       mentionDirectory: {
         identities: [],
       },
+      slackMessageTemplate: DEFAULT_SLACK_MESSAGE_TEMPLATE,
     };
     await fs.writeFile(DATA_FILE, JSON.stringify(initialData, null, 2), 'utf8');
   }
@@ -346,6 +364,7 @@ async function readStore(): Promise<RelayRuleStoreData> {
     discordMentionTrigger: normalizeDiscordMentionTrigger(parsed.discordMentionTrigger),
     lineMentionTrigger: normalizeLineMentionTrigger(parsed.lineMentionTrigger),
     mentionDirectory: normalizeMentionDirectory(parsed.mentionDirectory),
+    slackMessageTemplate: normalizeSlackMessageTemplate(parsed.slackMessageTemplate),
   };
 }
 
@@ -368,6 +387,7 @@ export async function getRelaySettings(): Promise<{
   discordMentionTrigger: DiscordMentionTriggerConfig;
   lineMentionTrigger: LineMentionTriggerConfig;
   mentionDirectory: MentionDirectoryConfig;
+  slackMessageTemplate: string;
 }> {
   const store = await readStore();
   return {
@@ -379,6 +399,7 @@ export async function getRelaySettings(): Promise<{
     discordMentionTrigger: store.discordMentionTrigger,
     lineMentionTrigger: store.lineMentionTrigger,
     mentionDirectory: store.mentionDirectory,
+    slackMessageTemplate: store.slackMessageTemplate,
   };
 }
 
@@ -396,6 +417,7 @@ export async function updateRelaySettings(patch: {
   discordMentionTrigger?: Partial<DiscordMentionTriggerConfig>;
   lineMentionTrigger?: Partial<LineMentionTriggerConfig>;
   mentionDirectory?: Partial<MentionDirectoryConfig>;
+  slackMessageTemplate?: string;
 }): Promise<{
   globalExcludedAuthorIds: string[];
   globalExcludedAuthorProfiles: DiscordGlobalExcludedAuthorProfile[];
@@ -405,6 +427,7 @@ export async function updateRelaySettings(patch: {
   discordMentionTrigger: DiscordMentionTriggerConfig;
   lineMentionTrigger: LineMentionTriggerConfig;
   mentionDirectory: MentionDirectoryConfig;
+  slackMessageTemplate: string;
 }> {
   const store = await readStore();
 
@@ -458,6 +481,10 @@ export async function updateRelaySettings(patch: {
     store.mentionDirectory = normalizeMentionDirectory(next);
   }
 
+  if (typeof patch.slackMessageTemplate === 'string') {
+    store.slackMessageTemplate = normalizeSlackMessageTemplate(patch.slackMessageTemplate);
+  }
+
   await writeStore(store);
 
   return {
@@ -469,6 +496,7 @@ export async function updateRelaySettings(patch: {
     discordMentionTrigger: store.discordMentionTrigger,
     lineMentionTrigger: store.lineMentionTrigger,
     mentionDirectory: store.mentionDirectory,
+    slackMessageTemplate: store.slackMessageTemplate,
   };
 }
 
@@ -487,6 +515,7 @@ export async function exportRelayRules(): Promise<RelayRuleExportData> {
     discordMentionTrigger: store.discordMentionTrigger,
     lineMentionTrigger: store.lineMentionTrigger,
     mentionDirectory: store.mentionDirectory,
+    slackMessageTemplate: store.slackMessageTemplate,
   };
 }
 
@@ -539,6 +568,7 @@ export async function importRelayRules(
       discordMentionTrigger: { enabled: false, allowedGuildIds: [], mappings: [] },
       lineMentionTrigger: { enabled: false, allowedGroupIds: [], excludedGroupIds: [], mappings: [] },
       mentionDirectory: { identities: [] },
+      slackMessageTemplate: DEFAULT_SLACK_MESSAGE_TEMPLATE,
     };
 
   store.discordRules = store.discordRules.concat(discordRules as DiscordRelayRule[]);
@@ -592,6 +622,12 @@ export async function importRelayRules(
     });
   } else {
     store.mentionDirectory = mentionDirectory;
+  }
+
+  if (typeof raw.slackMessageTemplate === 'string' && raw.slackMessageTemplate.trim()) {
+    store.slackMessageTemplate = normalizeSlackMessageTemplate(raw.slackMessageTemplate);
+  } else if (mode === 'replace') {
+    store.slackMessageTemplate = DEFAULT_SLACK_MESSAGE_TEMPLATE;
   }
 
   await writeStore(store);

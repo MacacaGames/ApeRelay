@@ -1,8 +1,20 @@
 import { fetch } from 'undici';
 import { config } from '../config.js';
 import { logger } from '../logger.js';
-import { getMentionTriggerRuntimeConfig } from '../admin/relayRuleStore.js';
+import { DEFAULT_SLACK_MESSAGE_TEMPLATE, getRelaySettings } from '../admin/relayRuleStore.js';
 import type { SlackMentionIdentity, UnifiedMessage } from '../types.js';
+
+function formatTimestamp(date: Date): string {
+  return date.toLocaleString('zh-TW', {
+    timeZone: config.timezone,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  });
+}
 
 function formatPlatformLabel(platform: UnifiedMessage['platform']): string {
   if (platform === 'LINE') return '🟢 LINE';
@@ -88,32 +100,63 @@ function annotateContentMentions(msg: UnifiedMessage, resolver: Map<string, stri
   return content;
 }
 
+function renderTemplate(template: string, vars: Record<string, string>): string {
+  const entries = Object.entries(vars);
+  const renderedLines: string[] = [];
+
+  for (const rawLine of template.split('\n')) {
+    let line = rawLine;
+    let hadPlaceholder = false;
+    for (const [key, value] of entries) {
+      const token = `{${key}}`;
+      if (line.includes(token)) {
+        hadPlaceholder = true;
+        line = line.split(token).join(value ?? '');
+      }
+    }
+    // Drop a line that became blank *only* because its placeholder(s) resolved
+    // to empty (e.g. a lone {mentions} line when there are no mentions).
+    if (hadPlaceholder && line.trim() === '') {
+      continue;
+    }
+    renderedLines.push(line);
+  }
+
+  return renderedLines.join('\n').replace(/\n{3,}/g, '\n\n').trim();
+}
+
 function buildSlackMessageText(
   msg: UnifiedMessage,
   mentionText: string,
   resolver: Map<string, string>,
+  template: string,
 ): string {
   const annotatedContent = truncateSlackText(annotateContentMentions(msg, resolver), 2500);
 
-  const lines: string[] = [];
-  if (mentionText) {
-    lines.push(mentionText);
-  }
-  lines.push(`發訊者：${msg.senderName}`);
-  lines.push(`內容：${annotatedContent}`);
-  lines.push('');
-  lines.push(buildSourceLine(msg));
-
-  return lines.join('\n');
+  return renderTemplate(template || DEFAULT_SLACK_MESSAGE_TEMPLATE, {
+    mentions: mentionText,
+    sender: msg.senderName,
+    content: annotatedContent,
+    platform: formatPlatformLabel(msg.platform),
+    source: buildSourceLine(msg),
+    time: formatTimestamp(msg.timestamp),
+    sourceUrl: msg.sourceUrl ?? '',
+  });
 }
 
-async function loadMentionDirectoryIdentities(): Promise<SlackMentionIdentity[]> {
+async function loadSlackRenderConfig(): Promise<{
+  identities: SlackMentionIdentity[];
+  template: string;
+}> {
   try {
-    const runtime = await getMentionTriggerRuntimeConfig();
-    return runtime.mentionDirectory?.identities ?? [];
+    const settings = await getRelaySettings();
+    return {
+      identities: settings.mentionDirectory?.identities ?? [],
+      template: settings.slackMessageTemplate || DEFAULT_SLACK_MESSAGE_TEMPLATE,
+    };
   } catch (err) {
-    logger.warn({ err }, 'Unable to load mention directory for Slack content annotation');
-    return [];
+    logger.warn({ err }, 'Unable to load Slack render config; using defaults');
+    return { identities: [], template: DEFAULT_SLACK_MESSAGE_TEMPLATE };
   }
 }
 
@@ -155,8 +198,9 @@ export async function sendToSlack(
     .map((value) => normalizeMentionTarget(value))
     .filter(Boolean);
   const mentionText = Array.from(new Set(normalizedMentionTargets)).join(' ');
-  const resolver = buildMentionResolver(await loadMentionDirectoryIdentities());
-  const messageText = buildSlackMessageText(msg, mentionText, resolver);
+  const renderConfig = await loadSlackRenderConfig();
+  const resolver = buildMentionResolver(renderConfig.identities);
+  const messageText = buildSlackMessageText(msg, mentionText, resolver, renderConfig.template);
   const targetChannel = channel ?? config.slack.defaultChannel;
 
   const blocks: Array<Record<string, unknown>> = [

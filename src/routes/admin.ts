@@ -2,6 +2,7 @@ import { Router, type Request } from 'express';
 import crypto from 'node:crypto';
 import { fetch } from 'undici';
 import {
+  DEFAULT_SLACK_MESSAGE_TEMPLATE,
   createDiscordRelayRule,
   createLineRelayRule,
   deleteDiscordRelayRule,
@@ -906,6 +907,7 @@ router.put('/api/admin/settings', async (req, res) => {
     globalExcludedAuthorRoleIds?: unknown;
     globalExcludedLineSpeakerIds?: unknown;
     globalExcludedLineSpeakerProfiles?: unknown;
+    slackMessageTemplate?: unknown;
   };
 
   const patch: {
@@ -914,7 +916,12 @@ router.put('/api/admin/settings', async (req, res) => {
     globalExcludedAuthorRoleIds?: string[];
     globalExcludedLineSpeakerIds?: string[];
     globalExcludedLineSpeakerProfiles?: LineGlobalExcludedSpeakerProfile[];
+    slackMessageTemplate?: string;
   } = {};
+
+  if (typeof body.slackMessageTemplate === 'string') {
+    patch.slackMessageTemplate = body.slackMessageTemplate;
+  }
 
   if (Array.isArray(body.globalExcludedAuthorIds)) {
     patch.globalExcludedAuthorIds = body.globalExcludedAuthorIds
@@ -1231,6 +1238,18 @@ router.get('/admin', (_req, res) => {
         background: #fff;
       }
 
+      textarea {
+        width: 100%;
+        border: 1px solid #cbd5e1;
+        border-radius: 8px;
+        padding: 10px 12px;
+        background: #fff;
+        font-family: ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+        font-size: 13px;
+        line-height: 1.5;
+        resize: vertical;
+      }
+
       input[type="checkbox"] { width: auto; }
 
       .row {
@@ -1493,6 +1512,18 @@ router.get('/admin', (_req, res) => {
           </thead>
           <tbody id="sharedRuleRows"></tbody>
         </table>
+      </section>
+
+      <section class="card">
+        <h2>Slack 訊息格式（全域模板）</h2>
+        <p class="hint">編輯轉發到 Slack 的訊息版型，存檔即時生效（不需重新部署）。Discord / LINE / Webhook 共用此模板。</p>
+        <p class="hint">可用變數：<code>{mentions}</code> 通知對象、<code>{sender}</code> 發訊者、<code>{content}</code> 內容（含標記對象）、<code>{platform}</code> 平台、<code>{source}</code> 來源行（【平台】來源：頻道）、<code>{time}</code> 時間、<code>{sourceUrl}</code> 原始連結。空白的變數該行會自動省略。</p>
+        <textarea id="slackMessageTemplate" rows="8" spellcheck="false" placeholder="訊息模板"></textarea>
+        <div class="actions">
+          <button id="saveSlackTemplateBtn" type="button">儲存訊息格式</button>
+          <button id="resetSlackTemplateBtn" class="ghost" type="button">還原預設</button>
+        </div>
+        <div id="slackTemplateStatus" class="hint"></div>
       </section>
 
       <section class="card">
@@ -1814,6 +1845,7 @@ router.get('/admin', (_req, res) => {
 
     <script>
       const slackDefaultChannelFromEnv = ${JSON.stringify(config.slack.defaultChannel)};
+      const defaultSlackMessageTemplate = ${JSON.stringify(DEFAULT_SLACK_MESSAGE_TEMPLATE)};
 
       let discordSources = [];
       let lineSources = [];
@@ -1831,6 +1863,7 @@ router.get('/admin', (_req, res) => {
         globalExcludedAuthorRoleIds: [],
         globalExcludedLineSpeakerIds: [],
         globalExcludedLineSpeakerProfiles: [],
+        slackMessageTemplate: '',
       };
       let mentionTriggerSettings = {
         discordMentionTrigger: { enabled: false, allowedGuildIds: [], mappings: [] },
@@ -2075,6 +2108,7 @@ router.get('/admin', (_req, res) => {
           globalExcludedAuthorRoleIds: [],
           globalExcludedLineSpeakerIds: [],
           globalExcludedLineSpeakerProfiles: [],
+          slackMessageTemplate: defaultSlackMessageTemplate,
         };
       }
 
@@ -2342,6 +2376,7 @@ router.get('/admin', (_req, res) => {
           globalExcludedAuthorRoleIds: [],
           globalExcludedLineSpeakerIds: [],
           globalExcludedLineSpeakerProfiles: [],
+          slackMessageTemplate: defaultSlackMessageTemplate,
         };
       }
 
@@ -2492,6 +2527,11 @@ router.get('/admin', (_req, res) => {
           lineInput.value = (relaySettings.globalExcludedLineSpeakerIds || []).join(', ');
         }
         renderGlobalExcludedLineSpeakerRows();
+
+        const templateInput = byId('slackMessageTemplate');
+        if (templateInput instanceof HTMLTextAreaElement) {
+          templateInput.value = relaySettings.slackMessageTemplate || defaultSlackMessageTemplate;
+        }
       }
 
       function getSlackDisplayNameFromMention(mention) {
@@ -3722,6 +3762,34 @@ router.get('/admin', (_req, res) => {
             if (status instanceof HTMLElement) {
               status.textContent = '儲存 LINE 全域設定失敗，請稍後再試。';
             }
+          }
+        });
+
+        byId('saveSlackTemplateBtn')?.addEventListener('click', async () => {
+          const templateInput = byId('slackMessageTemplate');
+          const value = templateInput instanceof HTMLTextAreaElement ? templateInput.value : '';
+          const status = byId('slackTemplateStatus');
+          try {
+            relaySettings = await saveSettings({ slackMessageTemplate: value });
+            renderGlobalSettings();
+            if (status instanceof HTMLElement) {
+              status.textContent = 'Slack 訊息格式已儲存，立即生效。';
+            }
+          } catch {
+            if (status instanceof HTMLElement) {
+              status.textContent = '儲存 Slack 訊息格式失敗，請稍後再試。';
+            }
+          }
+        });
+
+        byId('resetSlackTemplateBtn')?.addEventListener('click', () => {
+          const templateInput = byId('slackMessageTemplate');
+          if (templateInput instanceof HTMLTextAreaElement) {
+            templateInput.value = defaultSlackMessageTemplate;
+          }
+          const status = byId('slackTemplateStatus');
+          if (status instanceof HTMLElement) {
+            status.textContent = '已還原為預設模板（尚未儲存，請按「儲存訊息格式」生效）。';
           }
         });
 
