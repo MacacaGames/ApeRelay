@@ -22,18 +22,29 @@ function formatPlatformLabel(platform: UnifiedMessage['platform']): string {
   return '🔗 Webhook';
 }
 
-// 【平台】來源：頻道
+// Server / group name (Discord splits "server::channel"; LINE/Webhook = sourceName).
+function getServerName(msg: UnifiedMessage): string {
+  if (msg.platform === 'Discord') {
+    const [serverName] = msg.sourceName.split('::');
+    return serverName ?? msg.sourceName;
+  }
+  return msg.sourceName;
+}
+
+// Channel with leading "#" for Discord; empty for LINE / Webhook (no channel).
+function getChannelName(msg: UnifiedMessage): string {
+  if (msg.platform === 'Discord') {
+    const channelName = msg.sourceName.split('::')[1];
+    return channelName ? `#${channelName}` : '';
+  }
+  return '';
+}
+
+// Combined 【平台】來源 #頻道 — kept for the legacy {source} placeholder.
 function buildSourceLine(msg: UnifiedMessage): string {
   const platform = formatPlatformLabel(msg.platform);
-
-  if (msg.platform === 'Discord') {
-    const [serverName, channelName] = msg.sourceName.split('::');
-    const server = serverName ?? msg.sourceName;
-    const tail = channelName ? `${server}：#${channelName}` : server;
-    return `【${platform}】${tail}`;
-  }
-
-  return `【${platform}】${msg.sourceName}`;
+  const channel = getChannelName(msg);
+  return `【${platform}】${getServerName(msg)}${channel ? ` ${channel}` : ''}`;
 }
 
 function truncateSlackText(value: string, maxLength: number): string {
@@ -114,10 +125,14 @@ function renderTemplate(template: string, vars: Record<string, string>): string 
         line = line.split(token).join(value ?? '');
       }
     }
-    // Drop a line that became blank *only* because its placeholder(s) resolved
-    // to empty (e.g. a lone {mentions} line when there are no mentions).
-    if (hadPlaceholder && line.trim() === '') {
-      continue;
+    if (hadPlaceholder) {
+      // Trim trailing space left by an empty placeholder (e.g. {channel} on LINE).
+      line = line.replace(/[ \t]+$/, '');
+      // Drop a line that became blank *only* because its placeholder(s) resolved
+      // to empty (e.g. a lone {mentions} line when there are no mentions).
+      if (line.trim() === '') {
+        continue;
+      }
     }
     renderedLines.push(line);
   }
@@ -138,8 +153,12 @@ function buildSlackMessageText(
     sender: msg.senderName,
     content: annotatedContent,
     platform: formatPlatformLabel(msg.platform),
-    source: buildSourceLine(msg),
+    server: getServerName(msg),
+    channel: getChannelName(msg),
+    link: msg.sourceUrl ?? '',
     time: formatTimestamp(msg.timestamp),
+    // Legacy aliases (kept so previously-saved templates keep working).
+    source: buildSourceLine(msg),
     sourceUrl: msg.sourceUrl ?? '',
   });
 }

@@ -1517,7 +1517,16 @@ router.get('/admin', (_req, res) => {
       <section class="card">
         <h2>Slack 訊息格式（全域模板）</h2>
         <p class="hint">編輯轉發到 Slack 的訊息版型，存檔即時生效（不需重新部署）。Discord / LINE / Webhook 共用此模板。</p>
-        <p class="hint">可用變數：<code>{mentions}</code> 通知對象、<code>{sender}</code> 發訊者、<code>{content}</code> 內容（含標記對象）、<code>{platform}</code> 平台、<code>{source}</code> 來源行（【平台】來源：頻道）、<code>{time}</code> 時間、<code>{sourceUrl}</code> 原始連結。空白的變數該行會自動省略。</p>
+        <p class="hint">可用變數：
+          <code>{platform}</code> 平台（🎮 Discord / 🟢 LINE）、
+          <code>{server}</code> 伺服器/群組名、
+          <code>{channel}</code> 頻道（Discord 為 #頻道；LINE 為空）、
+          <code>{sender}</code> 發訊者、
+          <code>{content}</code> 內容（含標記對象）、
+          <code>{mentions}</code> 通知對象、
+          <code>{time}</code> 時間、
+          <code>{link}</code> 原始連結。
+          空白的變數該行會自動省略。</p>
         <textarea id="slackMessageTemplate" rows="8" spellcheck="false" placeholder="訊息模板"></textarea>
         <div class="actions">
           <button id="saveSlackTemplateBtn" type="button">儲存訊息格式</button>

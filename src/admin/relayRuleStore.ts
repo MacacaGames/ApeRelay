@@ -21,7 +21,7 @@ export const DEFAULT_SLACK_MESSAGE_TEMPLATE = [
   '發訊者：{sender}',
   '內容：{content}',
   '',
-  '{source}',
+  '【{platform}】{server} {channel}',
 ].join('\n');
 
 function normalizeSlackMessageTemplate(value: unknown): string {
